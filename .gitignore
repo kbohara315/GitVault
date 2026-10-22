@@ -1,0 +1,49 @@
+# MyGo and Go build output
+/.mygo/
+/build/
+/dist/
+/bin/
+/gitvault
+/gitvault.exe
+*.test
+*.test.exe
+/coverage.out
+/coverage.html
+/go.work
+/go.work.sum
+
+# Local runtime data (never commit real repository backups)
+/data/
+/backups/
+/mirrors/
+/snapshots/
+/tmp/
+*.bundle
+*.sqlite
+*.sqlite-*
+*.db
+*.db-shm
+*.db-wal
+*.log
+*.partial
+
+# Credentials, signing material, and local configuration
+.env
+.env.*
+!.env.example
+/config.local.json
+/secrets/
+/certs/
+*.key
+*.pem
+*.p12
+*.pfx
+/mygo-update.key
+
+# Editor and OS files
+/.idea/
+/.vscode/
+*.swp
+*~
+.DS_Store
+Thumbs.db

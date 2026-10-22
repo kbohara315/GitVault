@@ -1,0 +1,27 @@
+{
+  "recorded_at": "2026-10-22",
+  "git_commit": null,
+  "reason": "Workspace is not a Git repository.",
+  "files": {
+    "AGENTS.md": "7041dfc99ff1a18188db45ee0f091c7352e74ac4855027eee7c1b932591be76f",
+    "README.md": "6255f8b7aab46b45ef5cec46870f465a7ce28a6d60969c89332990b0ce7c62d6",
+    "CONTRIBUTING.md": "cfb4a6666ee871d791e67bddf46df1f2741f4db469c96b917da9accd568d42dc",
+    "SECURITY.md": "ac7e34a90e23f961238605f3def1d97c04855dff376b09d1ed59a039b5eaae0f",
+    "go.mod": "33d9a79bd3a9ccbe4fc3917133b5ab7a45d9e9a93265c16ee33bea14726339ef",
+    "go.sum": "122047850b8cdd15d324d5b7c15373d4442ed59f7ac30e6f97004bf9c14896df",
+    "main.go": "b881f5eae9c9a54220df4176baae2eb46b565cced043c78556bc9bb401f8e6b1",
+    "mygo.json": "b570aa3279d6288de501d3129155fe8681ed1098cbf6d019ccb9bb0d46090dcd",
+    "Makefile": "3a53e1242d0f6477e6cbfd88253e323de05141b26b5ca4636a1a5ff457158833",
+    ".github/workflows/ci.yml": "b43c1723f629c27fd0fde2b0440b1e44e97421b82a70656612ba13993dd79351",
+    "internal/desktop/app.go": "f96e22535bf156d9b0bfdc563c20044ba718d5784961adb15a887f9236cc1994",
+    "internal/desktop/app_test.go": "6ac45cb71130a2f3ed37f568eaa8648287f7a0beed34f0cfda46a68e807181bc",
+    "docs/README.md": "3bd6eaa137b8fe4f4a4208800b998a80e298f8869e04c7c1a5fd2a1b98f47051",
+    "docs/ARCHITECTURE.md": "7500e571e70aad1db3bf837de40b0ce5dc8f0f19d22d7d01b003460138d33dd4",
+    "docs/IMPLEMENTATION.md": "e0ac2efde853684fbc168966452ab7cbfe69e41e13775eb5cd24c2be29923832",
+    "docs/BACKUP-FORMAT.md": "7be7c146197b0b65d8e893c11c129e45745d3e4ba9eedf63f17d1882e1d7a8f0",
+    "docs/SECURITY.md": "81da40bf4c3055d56cb42406af0918d30330172c9357096bae59b65160d760d3",
+    "docs/PRODUCT.md": "af3de783a5e5823b9c2edb3094498ca4347f78ed1f8de9b9bf7d7a5e66cd912e",
+    "docs/DATA-MODEL.md": "e66014f51153395a8cf8ae1135674a0a2d21372067c6bb147a6983108731c14a",
+    "docs/TESTING.md": "4f902ad26682521eb6de019ef56eabb27b4cc8c6e78b034b6b6e21f21e28b6ce"
+  }
+}

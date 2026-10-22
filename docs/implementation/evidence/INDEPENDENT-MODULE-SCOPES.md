@@ -1,0 +1,13 @@
+# Independent module work reservations
+
+Under the user's full-application implementation request, source work may run in disjoint modules whose existing specified interfaces do not consume unfinished predecessor source. This is a technical execution partition, not a change to the task DAG or permission to mark integration tasks complete early.
+
+- Recovery writer: `internal/backup/{doc,manifest,result}*.go` for I01, then reviewed runner/recovery work in sequence.
+- Identity/discovery writer: `internal/secrets/**` and `internal/github/**` only. Native secret adapter/session lease and bounded REST discovery are real standalone behavior with tests; Git broker, store, coordinator, and UI integration wait for their predecessors.
+- Policy writer: `internal/scheduler/**` and `internal/retention/**` only. Pure occurrence/preview logic and protected scoped execution are tested against real temporary files and injected transport/clock seams. They may not add app/SQLite/UI or perform real-data deletion.
+- Parent: shared status/evidence, module files/dependency qualification, test tooling, and eventual composition.
+- Persistence/configuration writer: `internal/config/**` and `internal/store/**` only. Implement actual validated configuration and SQLite revision/job/artifact primitives with real temporary-database tests. No coordinator/UI/engine integration or task completion is claimed before its predecessors are accepted. Parent pinned the reviewed `modernc.org/sqlite v1.61.0` / `modernc.org/libc v1.79.0` graph for this actual implementation.
+- Cloud transport writer: `internal/cloud/**` only. Actual file-copy/retrieval/multipart behavior consumes the already reviewed manifest contract, not unfinished coordinator APIs. Parent pinned `github.com/aws/aws-sdk-go-v2/service/s3 v1.114.4` and its compatible dependency graph. No real credentials/provider access, task completion claim, source dependency edits, or shared status writes are delegated.
+- Credential-broker writer: `internal/backup/auth*.go` only. This is disjoint from the active runner's `git*.go`/`process*.go` ownership. Implement restricted job-owned helper IPC and helper entrypoint with synthetic process/protocol tests; no runner/source-acquisition integration or task completion is implied. Parent will wire the validated runner and main binary after review.
+
+Do not edit another writer's files, introduce placeholder infrastructure, or infer a task is DONE from a module test. Full task gates, integration wiring, failure/restart evidence, and independent review remain required. Each module's named tests must assert observable behavior rather than implementation call counts alone. Global gates run on a stable combined source snapshot, not mid-write.
