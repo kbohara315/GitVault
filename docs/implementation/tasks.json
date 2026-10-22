@@ -33,7 +33,7 @@
       "evidence": [], "review": {"status": "PENDING", "correction_rounds": 0, "approval": null}
     },
     {
-      "id": "I02", "name": "Controlled Git and process-tree lifetime", "dependencies": ["I01"], "status": "IN_PROGRESS",
+      "id": "I02", "name": "Controlled Git and process-tree lifetime", "dependencies": ["I01"], "status": "DONE",
       "owned_paths": ["internal/backup/git*.go", "internal/backup/process*.go", "internal/backup/runner-policy.md", "docs/SECURITY.md", "docs/DEPENDENCIES.md"],
       "purpose": "Make installed Git a private bounded adapter with ownership that outlives every child.",
       "steps": ["Resolve Git and build operation-specific argv/environment policies; isolate config, templates, hooks, alternates, replacements, helpers, prompts and transport.", "Separate explicit local-source acquisition from strictly offline restoration; never offer arbitrary commands/environment to callers.", "Bound stdout, diagnostics, deadlines and pipe draining; terminate and reap descendants before return, including a grandchild holding a pipe after parent exit.", "Probe installed Git operations/object formats with temporary repositories and record tested capabilities, not an assumed minimum version."],
@@ -46,7 +46,7 @@
       "evidence": [], "review": {"status": "PENDING", "correction_rounds": 0, "approval": null}
     },
     {
-      "id": "I03", "name": "Offline full snapshot and no-replace bare restore", "dependencies": ["I01", "I02"], "status": "TODO",
+      "id": "I03", "name": "Offline full snapshot and no-replace bare restore", "dependencies": ["I01", "I02"], "status": "IN_PROGRESS",
       "required_assertions": ["TestSnapshotRefAndHeadCoverage rejects unrecognizable/unqualified absent HEAD with no artifact; never invent a default branch or claim unsupported preservation."],
       "owned_paths": ["internal/backup/engine*.go", "internal/backup/create*.go", "internal/backup/verify*.go", "internal/backup/restore*.go", "internal/backup/filesystem*.go", "internal/backup/ownership*.go", "docs/BACKUP-FORMAT.md", "docs/RECOVERY-SEMANTICS.md", ".github/workflows/ci.yml"],
       "purpose": "Prove independent recovery from one immutable full artifact before adding services.",

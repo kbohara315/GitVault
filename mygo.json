@@ -1,0 +1,12 @@
+{
+  "name": "GitVault",
+  "identifier": "com.example.gitvault",
+  "version": "0.1.0",
+  "main": ".",
+  "out": "build",
+  "linux": {
+    "webview": false,
+    "comment": "Local-first Git repository backup and recovery",
+    "categories": ["Utility", "Development"]
+  }
+}

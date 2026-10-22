@@ -4,9 +4,9 @@ GitVault uses native MyGo UI and Git bundle snapshots. These documents use short
 
 ## Current status
 
-Implemented: native window, five-page navigation, pinned MyGo toolchain, headless UI tests, developer commands, and CI definition.
+Reviewed modules: bounded snapshot contract, Linux controlled Git runner, native secrets adapter, HTTPS GitHub discovery, scheduling/retention policies, native command controls, and bounded UI event bridge. Behavioral tests use synthetic inputs and temporary resources. Native platform behavior is not qualified by headless tests.
 
-Planned: every backup-engine, database, credential, GitHub, restore, scheduling, and cloud capability described below. A design statement is not a claim that the feature exists.
+In progress: offline recovery, SQLite/configuration, cloud transport, credential broker, and durable application integration. The desktop still starts without its real backend. Module acceptance does not complete its full integration task; see [TASKS.md](implementation/TASKS.md) and retained evidence. Do not use this version to protect data.
 
 ## Read in this order
 

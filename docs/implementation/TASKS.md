@@ -22,8 +22,8 @@ Read [the runbook](../AGENT-RUNBOOK.md), [MODULES](../MODULES.md), [RECOVERY-SEM
 | ID | Slice | Dependencies | Status |
 | --- | --- | --- | --- |
 | I01 | Bounded full-snapshot contract | — | DONE |
-| I02 | Controlled Git and process-tree lifetime | I01 | IN_PROGRESS |
-| I03 | Offline full snapshot and no-replace bare restore | I01, I02 | TODO |
+| I02 | Controlled Git and process-tree lifetime | I01 | DONE (Linux runner) |
+| I03 | Offline full snapshot and no-replace bare restore | I01, I02 | IN_PROGRESS |
 | I04 | SQLite durable jobs and reconciliation | I03 | TODO |
 | I05 | Typed revisions and responsive native local workflow | I04 | TODO |
 | I06 | MyGo-native secrets and PAT broker onboarding | I05, I02 | TODO |
@@ -60,7 +60,7 @@ Dependency availability is not edit-disjointness: I09/I14 can be logically avail
 
 ## I02 — Controlled Git and process-tree lifetime
 
-**Purpose:** safe private installed-Git adapter. **Dependencies:** I01. **Status:** IN_PROGRESS.
+**Purpose:** safe private installed-Git adapter. **Dependencies:** I01. **Status:** DONE for Linux execution; Darwin/Windows fail closed and remain unqualified.
 
 **Allowed:** `internal/backup/{git*.go,process*.go,runner-policy.md}`, `docs/{SECURITY,DEPENDENCIES}.md`, common status paths.
 
@@ -78,7 +78,7 @@ Dependency availability is not edit-disjointness: I09/I14 can be logically avail
 
 ## I03 — Offline full snapshot and no-replace bare restore
 
-**Purpose:** first end-to-end recoverable artifact. **Dependencies:** I01, I02. **Status:** TODO.
+**Purpose:** first end-to-end recoverable artifact. **Dependencies:** I01, I02. **Status:** IN_PROGRESS.
 
 **Allowed:** `internal/backup/{engine*,create*,verify*,restore*,filesystem*,ownership*}.go`, `docs/{BACKUP-FORMAT,RECOVERY-SEMANTICS}.md`, `.github/workflows/ci.yml` only to execute real engine tests, common status paths. Necessary dependency/scope changes require review first.
 
