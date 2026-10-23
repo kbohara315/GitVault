@@ -14,6 +14,7 @@ import (
 	"gitvault/internal/backup"
 	"gitvault/internal/config"
 	"gitvault/internal/desktop"
+	"gitvault/internal/github"
 	"gitvault/internal/secrets"
 	"gitvault/internal/store"
 
@@ -51,7 +52,7 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("open local application database: %w", err)
 	}
-	workflow, err := app.NewLocalWorkflowWithCredentials(ctx, s, buildLocalEngine(s), credentials)
+	workflow, err := app.NewLocalWorkflowWithDiscovery(ctx, s, buildLocalEngine(s), credentials, buildGitHubDiscovery)
 	if err != nil {
 		credentials.CloseLeases()
 		return errors.Join(fmt.Errorf("start local workflow: %w", err), s.Close())
@@ -81,6 +82,19 @@ func run() error {
 	closeErr := workflow.Close(closeCtx)
 	cancel()
 	return errors.Join(runErr, closeErr, s.Close())
+}
+
+func buildGitHubDiscovery(revision config.Revision) (app.GitHubDiscoverer, error) {
+	values := revision.Config()
+	options := github.DefaultOptions()
+	options.MaxRepositories = values.Limits.DiscoveryRepositories
+	options.ResponseBytes = values.Limits.HTTPResponseBytes
+	options.RequestTimeout = values.Timeouts.HTTPRequest.Value()
+	options.MaxAttempts = values.Retry.MaxAttempts
+	options.RateWait = values.GitHub.RateLimitWait.Value()
+	options.InitialBackoff = values.Retry.InitialBackoff.Value()
+	options.MaxBackoff = values.Retry.MaxBackoff.Value()
+	return github.New(options)
 }
 
 func buildLocalEngine(s *store.Store) app.LocalEngineBuilder {

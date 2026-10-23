@@ -2,31 +2,36 @@
 // No native UI types belong in this package.
 package app
 
-import "time"
+import (
+	"time"
+
+	"gitvault/internal/config"
+)
 
 type CommandKind string
 
 const (
-	Refresh          CommandKind = "refresh"
-	BindRoot         CommandKind = "bind_root"
-	SaveToken        CommandKind = "save_token"
-	RemoveToken      CommandKind = "remove_token"
-	Discover         CommandKind = "discover"
-	SelectRepository CommandKind = "select_repository"
-	BackupLocal      CommandKind = "backup_local"
-	BackupSelected   CommandKind = "backup_selected"
-	Cancel           CommandKind = "cancel"
-	Restore          CommandKind = "restore"
-	SaveSettings     CommandKind = "save_settings"
-	Upload           CommandKind = "upload"
-	ListRemote       CommandKind = "list_remote"
-	DownloadRestore  CommandKind = "download_restore"
-	PinSnapshot      CommandKind = "pin_snapshot"
-	PreviewRetention CommandKind = "preview_retention"
-	ExecuteRetention CommandKind = "execute_retention"
-	SaveSchedule     CommandKind = "save_schedule"
-	AcceptCatchUp    CommandKind = "accept_catch_up"
-	DismissCatchUp   CommandKind = "dismiss_catch_up"
+	Refresh              CommandKind = "refresh"
+	BindRoot             CommandKind = "bind_root"
+	SaveToken            CommandKind = "save_token"
+	RemoveToken          CommandKind = "remove_token"
+	Discover             CommandKind = "discover"
+	SelectRepository     CommandKind = "select_repository"
+	SetRepositoryFilters CommandKind = "set_repository_filters"
+	BackupLocal          CommandKind = "backup_local"
+	BackupSelected       CommandKind = "backup_selected"
+	Cancel               CommandKind = "cancel"
+	Restore              CommandKind = "restore"
+	SaveSettings         CommandKind = "save_settings"
+	Upload               CommandKind = "upload"
+	ListRemote           CommandKind = "list_remote"
+	DownloadRestore      CommandKind = "download_restore"
+	PinSnapshot          CommandKind = "pin_snapshot"
+	PreviewRetention     CommandKind = "preview_retention"
+	ExecuteRetention     CommandKind = "execute_retention"
+	SaveSchedule         CommandKind = "save_schedule"
+	AcceptCatchUp        CommandKind = "accept_catch_up"
+	DismissCatchUp       CommandKind = "dismiss_catch_up"
 )
 
 // Command is copied into a bounded admission queue. Sensitive fields are never
@@ -37,6 +42,7 @@ type Command struct {
 	Source, Root, SnapshotID, SnapshotPath, Destination, RepositoryID string
 	Selected, Confirm                                                 bool
 	Secret                                                            []byte
+	Filters                                                           config.GitHubFilters
 	Settings                                                          SettingsDraft
 	Schedule                                                          ScheduleDraft
 	Retention                                                         RetentionDraft
@@ -54,8 +60,8 @@ type ScheduleDraft struct {
 type RetentionDraft struct{ Daily, Weekly, Monthly string }
 
 type RepositoryView struct {
-	ID, Name, Description   string
-	Private, Fork, Selected bool
+	ID, Name, Description, Availability string
+	Private, Fork, Selected, Available  bool
 }
 
 type SnapshotView struct {
@@ -73,7 +79,9 @@ type ViewState struct {
 	Revision                                                  int64
 	Busy, CanCancel, CanBindRoot, CanStartLocal, Connected    bool
 	CredentialConfigured, CanManageCredential, CredentialBusy bool
+	DiscoveryBusy, CanDiscover, InventoryComplete             bool
 	Status, Notice, Error, Account                            string
+	Filters                                                   config.GitHubFilters
 	Settings                                                  SettingsDraft
 	Schedule                                                  ScheduleDraft
 	Retention                                                 RetentionDraft

@@ -77,9 +77,19 @@ type Backup struct {
 type Selection struct {
 	RepositoryIDs []string `json:"repository_ids"`
 }
+
+// GitHubFilters are display preferences only. They never imply repository
+// selection or backup authorization.
+type GitHubFilters struct {
+	Owned         bool `json:"owned"`
+	Organizations bool `json:"organizations"`
+	Collaborating bool `json:"collaborating"`
+	ExcludeForks  bool `json:"exclude_forks"`
+}
 type GitHub struct {
-	Credential    *Credential `json:"credential"`
-	RateLimitWait Duration    `json:"rate_limit_wait"`
+	Credential    *Credential   `json:"credential"`
+	Filters       GitHubFilters `json:"filters"`
+	RateLimitWait Duration      `json:"rate_limit_wait"`
 }
 type Limits struct {
 	ManifestBytes            int64 `json:"manifest_bytes"`
@@ -160,7 +170,7 @@ type Config struct {
 
 func Default() Config {
 	return Config{
-		SchemaVersion: 1, Backup: Backup{RepositoryConcurrency: 2, SnapshotKind: "full", KeepMirror: true}, Selection: Selection{RepositoryIDs: []string{}}, GitHub: GitHub{RateLimitWait: Duration(15 * time.Minute)},
+		SchemaVersion: 1, Backup: Backup{RepositoryConcurrency: 2, SnapshotKind: "full", KeepMirror: true}, Selection: Selection{RepositoryIDs: []string{}}, GitHub: GitHub{Filters: GitHubFilters{Owned: true, Organizations: true, Collaborating: true}, RateLimitWait: Duration(15 * time.Minute)},
 		Limits:   Limits{4 << 20, 100000, 4096, 32 << 20, 64 << 10, 100 << 30, 250 << 30, 10000, 16 << 20, 256, 64, 8 << 20, 4},
 		Timeouts: Timeouts{Duration(time.Hour), Duration(time.Minute), Duration(4 * time.Hour), Duration(30 * time.Second)}, Retry: Retry{3, Duration(time.Second), Duration(30 * time.Second)},
 		Cloud: Cloud{Targets: []Target{}, UploadConcurrency: 1, PartConcurrency: 2, PartSizeBytes: 16 << 20, MultipartThresholdBytes: 32 << 20}, Retention: Retention{"preview_only", 7, 4, 6}, Schedule: Schedule{LocalTime: "02:00", Frequency: "daily", CatchUp: "offer_once"},

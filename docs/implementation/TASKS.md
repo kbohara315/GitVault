@@ -26,8 +26,8 @@ Read [the runbook](../AGENT-RUNBOOK.md), [MODULES](../MODULES.md), [RECOVERY-SEM
 | I03 | Offline full snapshot and no-replace bare restore | I01, I02 | DONE (Linux host; other platforms/filesystems pending) |
 | I04 | SQLite durable jobs and reconciliation | I03 | DONE (Linux host; other OS/filesystems pending) |
 | I05 | Typed revisions and responsive native local workflow | I04 | DONE (Linux/amd64 implementation scope; broader qualification pending) |
-| I06 | MyGo-native secrets and PAT broker onboarding | I05, I02 | TODO |
-| I07 | GitHub REST pagination and explicit stable selection | I06, I05 | TODO |
+| I06 | MyGo-native secrets and PAT broker onboarding | I05, I02 | DONE (Linux/amd64 implementation scope; native locked/pending-prompt and other platforms pending) |
+| I07 | GitHub REST pagination and explicit stable selection | I06, I05 | DONE (Linux/amd64 implementation scope; provider/native UI qualification pending) |
 | I08 | Selected GitHub-to-local snapshot pipeline | I07, I03, I04, I05, I06 | TODO |
 | I09 | History, import and offline restore UI | I03, I04, I05 | TODO |
 | I10 | Optional S3/R2 copy of ready artifacts | I08, I06, I09 | TODO |
@@ -155,7 +155,7 @@ Dependency availability is not edit-disjointness: I09/I14 can be logically avail
 
 ## I07 — GitHub REST pagination and explicit stable selection
 
-**Purpose:** complete discovery without implicit permission to back up everything visible. **Dependencies:** I06, I05. **Status:** TODO.
+**Purpose:** complete discovery without implicit permission to back up everything visible. **Dependencies:** I06, I05. **Status:** DONE for the documented Linux/amd64 implementation scope after thirteen named tests across four gates, global format/test/vet/build/race checks, and independent GPT-6 Luna review. No live GitHub request or real credential was used. Non-Linux behavior, native secure-store prompt and broader native UI qualification remain pending; GitHub acquisition is I08. Baseline/checklist: `/tmp/opencode/gitvault-i07-evidence/I07-start.json` and `I07-checklist.md`; final gates/review: `/tmp/opencode/gitvault-i07-evidence/I07-results.md`.
 
 **Allowed:** `internal/{github,app,store,config,desktop}/**`, `main.go`, `docs/{SECURITY,CONFIGURATION}.md`, common status paths.
 
@@ -167,7 +167,7 @@ Dependency availability is not edit-disjointness: I09/I14 can be logically avail
 
 **Config:** filters, selected IDs, bounded wait; no bearer settings or filter-as-selection. **Exclude:** Git transfer, GraphQL, issues/PR export, live credentials.
 
-**Tests/gates:** `github_discovery`: `TestGitHubPagination`, `TestGitHubRateAndAuthErrors`, `TestGitHubDiscoveryCancellation`, `TestGitHubOriginAndResponseBounds`; `explicit_selection`: `TestStableExplicitSelection`, `TestPartialDiscoveryPreservesSelection`. Commands `go test ./internal/github -count=1`, `go test ./internal/app -count=1`, exact gates and G; six passes with malformed/cyclic links, rate/auth/timeout, rename/delete and empty/new IDs.
+**Tests/gates:** `github_discovery`: `TestGitHubPagination`, `TestGitHubRateAndAuthErrors`, `TestGitHubDiscoveryCancellation`, `TestGitHubOriginAndResponseBounds`, `TestGitHubDisplayFilters`, `TestGitHubDiscoveryBytes`; `explicit_selection`: `TestStableExplicitSelection`, `TestPartialDiscoveryPreservesSelection`, `TestCancelledDiscoveryPromptRemainsVisibleUntilRefresh`, `TestDiscoveryCancellationStopsWorkerAndShutdownWaits`; `inventory_migration`: `TestVersionOneMigrationPreservesConfiguration`, `TestGitHubInventorySurvivesReopen`; `native_selection_controls`: `TestNativeGitHubDiscoveryFiltersAndExplicitSelection`. Run the exact anchored commands in `tasks.json`, `go test ./internal/github -count=1`, `go test ./internal/app -count=1`, `go test ./internal/store -count=1`, `go test ./internal/desktop -count=1`, and G. Thirteen named tests must run/pass; cover malformed/cyclic and query-altered links, duplicate JSON keys, bounded rate/auth/timeout, partial/complete reconciliation, durable inventory, rename/delete, stable explicit IDs, new/empty selection, filter independence, cancellation/shutdown and pending secure-store status, migration preservation, and native controls.
 
 **Failure/cancel/restart:** cancel paging/wait promptly; distinguish partial from complete; restart restores selected identities only. **Stop:** cross-origin bearer leakage, partial-as-complete, auto-selection. **Platform evidence:** mock HTTP is default; native selection presentation separately per supported OS.
 

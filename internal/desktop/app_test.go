@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"gitvault/internal/app"
+	"gitvault/internal/config"
 
 	"github.com/egoist/mygo/ui"
 )
@@ -178,6 +179,49 @@ func TestNativeCredentialOnboardingControls(t *testing.T) {
 		if b != 0 {
 			t.Fatal("cleared credential draft bytes were not overwritten")
 		}
+	}
+}
+
+func TestNativeGitHubDiscoveryFiltersAndExplicitSelection(t *testing.T) {
+	b := &testBackend{state: app.ViewState{
+		Connected: true, Revision: 41, CanDiscover: true, Account: "alice", InventoryComplete: true,
+		Filters: config.GitHubFilters{Owned: true, Organizations: true, Collaborating: true},
+		Repositories: []app.RepositoryView{
+			{ID: "github:201", Name: "alice/one", Availability: "Available", Available: true},
+			{ID: "github:202", Name: "team/two", Availability: "Inaccessible or deleted", Selected: true},
+		},
+	}}
+	a := NewWithBackend(b)
+	tt := ui.NewTester(a.View, 1000, 1000)
+	if err := tt.Click("Repositories"); err != nil {
+		t.Fatal(err)
+	}
+	if !tt.HasText("Complete inventory for GitHub account alice.") || !tt.HasText("Newly discovered repositories stay unselected") {
+		t.Fatalf("repository inventory status or explicit-selection disclosure missing: %v", tt.Texts())
+	}
+	if tt.HasText("Select all") {
+		t.Fatal("repository discovery exposed implicit select-all")
+	}
+	if err := tt.Click("Discover GitHub repositories"); err != nil {
+		t.Fatal(err)
+	}
+	if err := tt.Click("Organization repositories"); err != nil {
+		t.Fatal(err)
+	}
+	if err := tt.Click("alice/one"); err != nil {
+		t.Fatal(err)
+	}
+	if len(b.commands) != 3 {
+		t.Fatalf("unexpected repository commands: %+v", b.commands)
+	}
+	if b.commands[0].Kind != app.Discover || b.commands[0].ExpectedRevision != 41 {
+		t.Fatalf("discovery was not revision-bound: %+v", b.commands[0])
+	}
+	if b.commands[1].Kind != app.SetRepositoryFilters || b.commands[1].ExpectedRevision != 41 || b.commands[1].Filters.Organizations {
+		t.Fatalf("display filter edit was not revision-bound or unexpectedly retained: %+v", b.commands[1])
+	}
+	if b.commands[2].Kind != app.SelectRepository || b.commands[2].ExpectedRevision != 41 || b.commands[2].RepositoryID != "github:201" || !b.commands[2].Selected {
+		t.Fatalf("selection did not use the stable explicit ID: %+v", b.commands[2])
 	}
 }
 

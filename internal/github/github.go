@@ -3,6 +3,7 @@
 package github
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -145,18 +146,18 @@ func New(o Options) (*Client, error) {
 func sameOrigin(a, b *url.URL) bool {
 	return b.Scheme == "https" && strings.EqualFold(a.Host, b.Host) && b.User == nil && b.Fragment == ""
 }
-func validToken(t string) bool {
+func validTokenBytes(t []byte) bool {
 	if len(t) < 1 || len(t) > 2560 {
 		return false
 	}
-	for _, c := range []byte(t) {
+	for _, c := range t {
 		if c < 33 || c > 126 {
 			return false
 		}
 	}
 	return true
 }
-func (c *Client) get(ctx context.Context, u *url.URL, token string, budget *time.Duration) ([]byte, http.Header, error) {
+func (c *Client) get(ctx context.Context, u *url.URL, token []byte, budget *time.Duration) ([]byte, http.Header, error) {
 	for attempt := 0; attempt < c.o.MaxAttempts; attempt++ {
 		if err := ctx.Err(); err != nil {
 			return nil, nil, err
@@ -170,7 +171,7 @@ func (c *Client) get(ctx context.Context, u *url.URL, token string, budget *time
 			cancel()
 			return nil, nil, &Error{Kind: InvalidResponse}
 		}
-		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Authorization", "Bearer "+string(token))
 		req.Header.Set("Accept", "application/vnd.github+json")
 		req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 		resp, e := c.http.Do(req)
@@ -197,7 +198,17 @@ func (c *Client) get(ctx context.Context, u *url.URL, token string, budget *time
 			return nil, nil, &Error{Kind: Bounds}
 		}
 		if readErr != nil {
-			return nil, nil, &Error{Kind: Transport}
+			clear(data)
+			if ctx.Err() != nil {
+				return nil, nil, ctx.Err()
+			}
+			if attempt+1 == c.o.MaxAttempts {
+				return nil, nil, &Error{Kind: Transport}
+			}
+			if e = c.backoff(ctx, attempt); e != nil {
+				return nil, nil, e
+			}
+			continue
 		}
 		s := resp.StatusCode
 		if s == 200 {
@@ -275,13 +286,67 @@ func decode(b []byte, v any) error {
 	if !utf8.Valid(b) {
 		return &Error{Kind: InvalidResponse}
 	}
-	d := json.NewDecoder(strings.NewReader(string(b)))
+	d := json.NewDecoder(bytes.NewReader(b))
+	d.UseNumber()
+	if err := scanJSONValue(d); err != nil {
+		return &Error{Kind: InvalidResponse}
+	}
+	if _, err := d.Token(); !errors.Is(err, io.EOF) {
+		return &Error{Kind: InvalidResponse}
+	}
+	d = json.NewDecoder(bytes.NewReader(b))
 	if e := d.Decode(v); e != nil {
 		return &Error{Kind: InvalidResponse}
 	}
 	var extra any
 	if e := d.Decode(&extra); !errors.Is(e, io.EOF) {
 		return &Error{Kind: InvalidResponse}
+	}
+	return nil
+}
+
+func scanJSONValue(d *json.Decoder) error {
+	token, err := d.Token()
+	if err != nil {
+		return err
+	}
+	delim, ok := token.(json.Delim)
+	if !ok {
+		return nil
+	}
+	switch delim {
+	case '{':
+		seen := make(map[string]bool)
+		for d.More() {
+			keyToken, err := d.Token()
+			if err != nil {
+				return err
+			}
+			key, ok := keyToken.(string)
+			if !ok || seen[key] {
+				return errors.New("duplicate or invalid JSON object key")
+			}
+			seen[key] = true
+			if err = scanJSONValue(d); err != nil {
+				return err
+			}
+		}
+		closeToken, err := d.Token()
+		if err != nil || closeToken != json.Delim('}') {
+			return errors.New("invalid JSON object")
+		}
+	case '[':
+		for d.More() {
+			if err = scanJSONValue(d); err != nil {
+				return err
+			}
+		}
+		closeToken, err := d.Token()
+		if err != nil || closeToken != json.Delim(']') {
+			return errors.New("invalid JSON array")
+		}
+	default:
+		return errors.New("invalid JSON delimiter")
 	}
 	return nil
 }
@@ -349,7 +414,7 @@ func (c *Client) nextLink(h http.Header, current *url.URL) (*url.URL, error) {
 					return nil, &Error{Kind: InvalidResponse}
 				}
 				u = current.ResolveReference(u)
-				if !sameOrigin(c.origin, u) || u.Path != "/user/repos" {
+				if !sameOrigin(c.origin, u) || u.Path != "/user/repos" || u.RawPath != "" || !validNextRepositoryPage(u, current) {
 					return nil, &Error{Kind: InvalidResponse}
 				}
 				next = u
@@ -357,6 +422,53 @@ func (c *Client) nextLink(h http.Header, current *url.URL) (*url.URL, error) {
 		}
 	}
 	return next, nil
+}
+
+func validNextRepositoryPage(next, current *url.URL) bool {
+	currentQuery, err := url.ParseQuery(current.RawQuery)
+	if err != nil || !validRepositoryQuery(currentQuery, false) {
+		return false
+	}
+	currentPage := 1
+	if value, ok := currentQuery["page"]; ok {
+		parsed, parseErr := strconv.Atoi(value[0])
+		if parseErr != nil || parsed < 2 || strconv.Itoa(parsed) != value[0] || parsed >= int(^uint(0)>>1)-1 {
+			return false
+		}
+		currentPage = parsed
+	}
+	nextQuery, err := url.ParseQuery(next.RawQuery)
+	if err != nil || !validRepositoryQuery(nextQuery, true) {
+		return false
+	}
+	nextPage, err := strconv.Atoi(nextQuery["page"][0])
+	return err == nil && strconv.Itoa(nextPage) == nextQuery["page"][0] && nextPage == currentPage+1
+}
+
+func validRepositoryQuery(query url.Values, requirePage bool) bool {
+	allowed := map[string]bool{"affiliation": true, "per_page": true, "sort": true, "direction": true, "page": true}
+	for key, values := range query {
+		if !allowed[key] || len(values) != 1 {
+			return false
+		}
+	}
+	if query.Get("affiliation") != "owner,collaborator,organization_member" || query.Get("per_page") != "100" || query.Get("sort") != "full_name" {
+		return false
+	}
+	if direction := query["direction"]; len(direction) > 1 || len(direction) == 1 && direction[0] != "asc" {
+		return false
+	}
+	page, hasPage := query["page"]
+	if requirePage && !hasPage || hasPage && (len(page) != 1 || page[0] == "") {
+		return false
+	}
+	if hasPage {
+		n, err := strconv.Atoi(page[0])
+		if err != nil || n < 2 {
+			return false
+		}
+	}
+	return true
 }
 func cleanText(s string, maxBytes int) bool {
 	if len(s) > maxBytes {
@@ -385,8 +497,16 @@ func validRepo(r Repository) bool {
 // owner,collaborator,organization_member. Results are unselected metadata only.
 // On any page failure it returns prior validated repositories and Complete=false.
 func (c *Client) Discover(ctx context.Context, token string) (Result, error) {
+	owned := []byte(token)
+	defer clear(owned)
+	return c.DiscoverBytes(ctx, owned)
+}
+
+// DiscoverBytes avoids retaining another token string in the application
+// coordinator. net/http still needs a transient header string for each request.
+func (c *Client) DiscoverBytes(ctx context.Context, token []byte) (Result, error) {
 	var result Result
-	if !validToken(token) {
+	if !validTokenBytes(token) {
 		return result, &Error{Kind: Authentication}
 	}
 	budget := c.o.RateWait
@@ -433,6 +553,9 @@ func (c *Client) Discover(ctx context.Context, token string) (Result, error) {
 		if err != nil {
 			return result, err
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		return result, err
 	}
 	result.Complete = true
 	return result, nil

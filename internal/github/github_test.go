@@ -17,6 +17,9 @@ const identity = `{"id":101,"login":"alice","name":"Alice","type":"User"}`
 func repo(id int, name string) string {
 	return fmt.Sprintf(`{"id":%d,"name":%q,"full_name":%q,"owner":{"id":101,"login":"alice","type":"User"},"clone_url":%q,"private":true,"fork":false,"description":"synthetic repository"}`, id, name, "alice/"+name, "https://github.com/alice/"+name+".git")
 }
+func repoPageLink(page int, relation string) string {
+	return fmt.Sprintf(`</user/repos?affiliation=owner%%2Ccollaborator%%2Corganization_member&per_page=100&sort=full_name&page=%d>; rel="%s"`, page, relation)
+}
 func clientFor(t *testing.T, h http.HandlerFunc, edit func(*Options)) (*Client, *httptest.Server) {
 	t.Helper()
 	s := httptest.NewTLSServer(h)
@@ -60,7 +63,7 @@ func TestGitHubPagination(t *testing.T) {
 		if r.URL.Query().Get("affiliation") != "owner,collaborator,organization_member" {
 			t.Error("wrong affiliation")
 		}
-		w.Header().Set("Link", `</user/repos?page=2>; rel="next", </user/repos?page=2>; rel="last"`)
+		w.Header().Set("Link", repoPageLink(2, "next")+", "+repoPageLink(2, "last"))
 		fmt.Fprintf(w, "[%s]", repo(201, "first"))
 	}, nil)
 	result, e := c.Discover(context.Background(), "SYNTHETIC_TOKEN")
@@ -73,12 +76,12 @@ func TestGitHubPagination(t *testing.T) {
 				fmt.Fprint(w, identity)
 				return
 			}
-			if r.URL.RawQuery == "page=2" {
+			if r.URL.Query().Get("page") == "2" {
 				w.WriteHeader(404)
 				fmt.Fprint(w, `{"message":"deleted SYNTHETIC_TOKEN"}`)
 				return
 			}
-			w.Header().Set("Link", `<?page=2>; rel="next"`)
+			w.Header().Set("Link", repoPageLink(2, "next"))
 			fmt.Fprintf(w, "[%s]", repo(201, "saved"))
 		}, nil)
 		r, e := c.Discover(context.Background(), "SYNTHETIC_TOKEN")
@@ -101,6 +104,33 @@ func TestGitHubPagination(t *testing.T) {
 		}
 	})
 }
+
+func TestGitHubDiscoveryBytes(t *testing.T) {
+	var calls atomic.Int32
+	c, _ := clientFor(t, func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		if r.Header.Get("Authorization") != "Bearer SYNTHETIC_TOKEN" {
+			t.Error("byte credential was not sent only as the bearer header")
+		}
+		if r.URL.Path == "/user" {
+			fmt.Fprint(w, identity)
+			return
+		}
+		fmt.Fprint(w, "[]")
+	}, nil)
+	token := []byte("SYNTHETIC_TOKEN")
+	result, err := c.DiscoverBytes(context.Background(), token)
+	if err != nil || !result.Complete || calls.Load() != 2 || string(token) != "SYNTHETIC_TOKEN" {
+		t.Fatalf("byte discovery failed or mutated caller bytes: result=%+v calls=%d err=%v", result, calls.Load(), err)
+	}
+	invalid := []byte("synthetic token with spaces")
+	_, err = c.DiscoverBytes(context.Background(), invalid)
+	wantKind(t, err, Authentication)
+	if calls.Load() != 2 {
+		t.Fatal("invalid byte credential caused an HTTP request")
+	}
+}
+
 func TestGitHubRateAndAuthErrors(t *testing.T) {
 	t.Run("disabled rate wait fails fast", func(t *testing.T) {
 		now := time.Date(2026, time.October, 23, 12, 0, 0, 0, time.UTC)
@@ -248,7 +278,7 @@ func TestGitHubDiscoveryCancellation(t *testing.T) {
 	})
 }
 func TestGitHubOriginAndResponseBounds(t *testing.T) {
-	for _, link := range []string{`<https://evil.invalid/user/repos>; rel="next"`, `<http://api.github.com/user/repos>; rel="next"`, `garbage`, `</user/repos?page=2>; rel="next`, `</user/repos?page=2>; rel="next", </user/repos?page=3>; rel="next"`, `</other>; rel="next"`, `<https://u:p@api.github.com/user/repos>; rel="next"`} {
+	for _, link := range []string{`<https://evil.invalid/user/repos>; rel="next"`, `<http://api.github.com/user/repos>; rel="next"`, `garbage`, `</user/repos?page=2>; rel="next`, `</user/repos?page=2>; rel="next", </user/repos?page=3>; rel="next"`, `</user/repos?affiliation=owner&per_page=100&sort=full_name&page=2>; rel="next"`, `</user/repos?affiliation=owner%2Ccollaborator%2Corganization_member&per_page=100&sort=full_name&page=3>; rel="next"`, `</other>; rel="next"`, `<https://u:p@api.github.com/user/repos>; rel="next"`} {
 		t.Run(link, func(t *testing.T) {
 			c, _ := clientFor(t, func(w http.ResponseWriter, r *http.Request) {
 				if r.URL.Path == "/user" {
@@ -276,7 +306,7 @@ func TestGitHubOriginAndResponseBounds(t *testing.T) {
 			t.Fatal("redirect escaped origin")
 		}
 	})
-	for _, mode := range []string{"bytes", "cycle", "count", "pages", "malformed", "credential URL", "trailing", "null"} {
+	for _, mode := range []string{"bytes", "cycle", "count", "pages", "malformed", "credential URL", "trailing", "null", "duplicate JSON key"} {
 		t.Run(mode, func(t *testing.T) {
 			c, _ := clientFor(t, func(w http.ResponseWriter, r *http.Request) {
 				if mode == "bytes" {
@@ -284,15 +314,19 @@ func TestGitHubOriginAndResponseBounds(t *testing.T) {
 					return
 				}
 				if r.URL.Path == "/user" {
-					fmt.Fprint(w, identity)
+					if mode == "duplicate JSON key" {
+						fmt.Fprint(w, `{"id":101,"id":102,"login":"alice","type":"User"}`)
+					} else {
+						fmt.Fprint(w, identity)
+					}
 					return
 				}
 				switch mode {
 				case "cycle":
-					w.Header().Set("Link", `<?page=2>; rel="next"`)
+					w.Header().Set("Link", repoPageLink(2, "next"))
 					fmt.Fprint(w, "[]")
 				case "pages":
-					w.Header().Set("Link", `<?page=2>; rel="next"`)
+					w.Header().Set("Link", repoPageLink(2, "next"))
 					fmt.Fprint(w, "[]")
 				case "count":
 					fmt.Fprintf(w, "[%s,%s]", repo(1, "one"), repo(2, "two"))
@@ -318,7 +352,7 @@ func TestGitHubOriginAndResponseBounds(t *testing.T) {
 			})
 			r, e := c.Discover(context.Background(), "SYNTHETIC_TOKEN")
 			k := InvalidResponse
-			if mode == "bytes" || mode == "cycle" || mode == "count" || mode == "pages" {
+			if mode == "bytes" || mode == "count" || mode == "pages" {
 				k = Bounds
 			}
 			wantKind(t, e, k)

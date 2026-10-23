@@ -21,6 +21,7 @@ var (
 	ErrCommandQueueFull           = errors.New("application command queue is full")
 	ErrUnsupportedCommand         = errors.New("this command is not available in the current build")
 	ErrCredentialOperationPending = errors.New("native credential interaction is pending")
+	ErrWorkflowBusy               = errors.New("application operation is busy")
 )
 
 // LocalEngineBuilder maps one immutable configuration revision to backup-owned
@@ -40,26 +41,31 @@ type LocalWorkflow struct {
 	store       *store.Store
 	build       LocalEngineBuilder
 	credentials CredentialStore
+	discovery   GitHubDiscoveryFactory
 	ctx         context.Context
 	cancel      context.CancelFunc
 	events      *Events
 	commands    chan Command
 	progress    chan backup.ProgressEvent
 	finished    chan workflowCompletion
+	discoveries chan discoveryCompletion
 	done        chan struct{}
+	discoveryWG sync.WaitGroup
 
 	mu    sync.RWMutex
 	state ViewState
 
-	root              store.RootBinding
-	hasRoot           bool
-	coordinator       *Coordinator
-	ready             bool
-	activeRunID       string
-	activeRepoID      string
-	lastRunID         string
-	closed            bool
-	rootRebindBlocked bool
+	root                     store.RootBinding
+	hasRoot                  bool
+	coordinator              *Coordinator
+	ready                    bool
+	activeRunID              string
+	activeRepoID             string
+	lastRunID                string
+	closed                   bool
+	rootRebindBlocked        bool
+	discoveryCancel          context.CancelFunc
+	discoveryCancelRequested bool
 }
 
 // NewLocalWorkflow opens no paths and starts no work. It loads current durable
@@ -72,6 +78,10 @@ func NewLocalWorkflow(parent context.Context, s *store.Store, build LocalEngineB
 // NewLocalWorkflowWithCredentials composes explicit native credential
 // onboarding into the same bounded worker that owns durable settings edits.
 func NewLocalWorkflowWithCredentials(parent context.Context, s *store.Store, build LocalEngineBuilder, credentials CredentialStore) (*LocalWorkflow, error) {
+	return newLocalWorkflow(parent, s, build, credentials, nil)
+}
+
+func newLocalWorkflow(parent context.Context, s *store.Store, build LocalEngineBuilder, credentials CredentialStore, discovery GitHubDiscoveryFactory) (*LocalWorkflow, error) {
 	if parent == nil || s == nil || build == nil {
 		return nil, errors.New("application context, store, and engine builder are required")
 	}
@@ -87,9 +97,9 @@ func NewLocalWorkflowWithCredentials(parent context.Context, s *store.Store, bui
 	ctx, cancel := context.WithCancel(parent)
 	queueCapacity := min(capacity, 256)
 	w := &LocalWorkflow{
-		store: s, build: build, credentials: credentials, ctx: ctx, cancel: cancel,
+		store: s, build: build, credentials: credentials, discovery: discovery, ctx: ctx, cancel: cancel,
 		events: NewEvents(capacity), commands: make(chan Command, queueCapacity),
-		progress: make(chan backup.ProgressEvent, capacity), finished: make(chan workflowCompletion, 1),
+		progress: make(chan backup.ProgressEvent, capacity), finished: make(chan workflowCompletion, 1), discoveries: make(chan discoveryCompletion, 1),
 		done:  make(chan struct{}),
 		state: ViewState{Connected: true, Revision: revision.ID(), Settings: settingsDraft(values), CanManageCredential: credentials != nil, Status: "Choose an existing local folder and bind it before starting a backup."},
 	}
@@ -219,7 +229,7 @@ func (w *LocalWorkflow) Submit(command Command) error {
 	inputSecret := command.Secret
 	defer clear(inputSecret)
 	switch command.Kind {
-	case Refresh, BindRoot, SaveSettings, BackupLocal, Cancel, SaveToken, RemoveToken:
+	case Refresh, BindRoot, SaveSettings, BackupLocal, Cancel, SaveToken, RemoveToken, Discover, SelectRepository, SetRepositoryFilters:
 	default:
 		return ErrUnsupportedCommand
 	}
@@ -237,7 +247,7 @@ func (w *LocalWorkflow) Submit(command Command) error {
 	if command.Kind == RemoveToken && w.credentials == nil {
 		return ErrCredentialUnavailable
 	}
-	for _, value := range []string{command.Source, command.Root, command.Settings.Root, command.Settings.Concurrency} {
+	for _, value := range []string{command.Source, command.Root, command.RepositoryID, command.Settings.Root, command.Settings.Concurrency} {
 		if len(value) > 32768 {
 			clear(command.Secret)
 			return errors.New("command input exceeds its bound")
@@ -250,9 +260,13 @@ func (w *LocalWorkflow) Submit(command Command) error {
 		return ErrWorkflowClosed
 	}
 	credentialCommand := command.Kind == SaveToken || command.Kind == RemoveToken
-	if (w.state.CredentialBusy || w.credentials != nil && w.credentials.Pending() || credentialCommand && w.state.Busy) && command.Kind != Refresh {
+	if (w.state.CredentialBusy || w.credentials != nil && w.credentials.Pending() || credentialCommand && w.state.Busy) && command.Kind != Refresh && command.Kind != Cancel {
 		clear(command.Secret)
 		return ErrCredentialOperationPending
+	}
+	if w.state.Busy && (command.Kind == Discover || command.Kind == SelectRepository || command.Kind == SetRepositoryFilters) {
+		clear(command.Secret)
+		return ErrWorkflowBusy
 	}
 	select {
 	case w.commands <- command:
@@ -286,6 +300,8 @@ func (w *LocalWorkflow) loop() {
 			w.handle(command)
 		case progress := <-w.progress:
 			w.handleProgress(progress)
+		case result := <-w.discoveries:
+			w.handleDiscoveryCompletion(result)
 		case completion := <-w.finished:
 			w.handleCompletion(completion)
 		}
@@ -307,8 +323,16 @@ func (w *LocalWorkflow) handle(command Command) {
 		w.saveGitHubToken(command)
 	case RemoveToken:
 		w.removeGitHubToken(command)
+	case Discover:
+		w.beginDiscovery(command)
+	case SelectRepository:
+		w.saveRepositorySelection(command)
+	case SetRepositoryFilters:
+		w.saveRepositoryFilters(command)
 	case Cancel:
-		w.cancelRun()
+		if !w.cancelDiscovery() {
+			w.cancelRun()
+		}
 	default:
 		w.setError("This command is not available in the current build.")
 	}
@@ -584,9 +608,31 @@ func (w *LocalWorkflow) refreshDurableView(ctx context.Context) {
 	w.mutate(func(s *ViewState) {
 		s.Revision = current.ID()
 		s.Settings = settingsDraft(values)
+		s.Filters = values.GitHub.Filters
 		s.CredentialConfigured = values.GitHub.Credential != nil
+		s.CredentialBusy = w.credentials != nil && w.credentials.Pending()
 		s.Connected = true
 	})
+	account, repositories, inventoryErr := w.store.LatestGitHubInventory(ctx)
+	if inventoryErr == nil {
+		selected := values.Selection.RepositoryIDs
+		views := repositoryView(account, repositories, values.GitHub.Filters, selected)
+		w.mutate(func(s *ViewState) {
+			s.Account = account.Login
+			s.Repositories = views
+			s.InventoryComplete = account.Complete
+		})
+	} else if errors.Is(inventoryErr, store.ErrNotFound) {
+		w.mutate(func(s *ViewState) {
+			s.Account = ""
+			s.Repositories = []RepositoryView{}
+			s.InventoryComplete = false
+		})
+	} else {
+		w.mutate(func(s *ViewState) {
+			s.Error = "Saved GitHub inventory could not be loaded. Repository selection was preserved."
+		})
+	}
 
 	snapshots := []SnapshotView{}
 	if w.hasRoot {
@@ -649,8 +695,10 @@ func (w *LocalWorkflow) recomputeControls() {
 	configured := current.Config().Backup.Root != nil && w.hasRoot && *current.Config().Backup.Root == w.root.Path
 	state.CanStartLocal = !busy && bound && configured
 	state.CanBindRoot = !busy && !w.closed && !w.rootRebindBlocked
-	state.CanCancel = w.activeRunID != ""
+	state.CanCancel = w.activeRunID != "" || w.discoveryCancel != nil
+	state.CredentialBusy = w.credentials != nil && w.credentials.Pending()
 	state.CanManageCredential = w.credentials != nil && !busy && !w.closed && !state.CredentialBusy && !w.credentials.Pending()
+	state.CanDiscover = w.discovery != nil && w.credentials != nil && current.Config().GitHub.Credential != nil && !busy && !w.closed && !state.CredentialBusy && !w.credentials.Pending()
 	w.state = CopyView(state)
 	w.mu.Unlock()
 	w.events.Publish(state)
@@ -693,6 +741,16 @@ func (w *LocalWorkflow) Close(ctx context.Context) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	case <-w.done:
+	}
+	workersDone := make(chan struct{})
+	go func() {
+		w.discoveryWG.Wait()
+		close(workersDone)
+	}()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-workersDone:
 	}
 	var closeErr error
 	if w.coordinator != nil {

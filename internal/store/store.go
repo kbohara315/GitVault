@@ -51,6 +51,9 @@ type Store struct {
 //go:embed migrations/001.sql
 var migrationOne string
 
+//go:embed migrations/002_github_inventory.sql
+var migrationTwo string
+
 func sqliteURI(path string) string {
 	u := url.URL{Scheme: "file", Path: filepath.ToSlash(path)}
 	q := url.Values{}
@@ -164,7 +167,8 @@ func (s *Store) migrate(ctx context.Context, dir, installation string) error {
 	if err = tx.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
 		return err
 	}
-	if version > 1 {
+	migrations := []string{migrationOne, migrationTwo}
+	if version > len(migrations) {
 		return ErrFutureSchema
 	}
 	if _, err = tx.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY,checksum TEXT NOT NULL,applied_at TEXT NOT NULL)`); err != nil {
@@ -191,45 +195,28 @@ func (s *Store) migrate(ctx context.Context, dir, installation string) error {
 	if err != nil {
 		return err
 	}
-	checksum := sha256.Sum256([]byte(migrationOne))
-	expected := hex.EncodeToString(checksum[:])
-	for _, v := range versions {
-		if v > 1 {
+	if version != len(versions) {
+		return ErrMigrationHistory
+	}
+	for i, v := range versions {
+		if v > len(migrations) {
 			return ErrFutureSchema
 		}
-	}
-	if len(versions) > 1 || (len(versions) == 1 && (versions[0] != 1 || sums[0] != expected || version != 1)) {
-		return ErrMigrationHistory
+		if v != i+1 {
+			return ErrMigrationHistory
+		}
+		sum := sha256.Sum256([]byte(migrations[i]))
+		if sums[i] != hex.EncodeToString(sum[:]) {
+			return ErrMigrationHistory
+		}
 	}
 	if len(versions) == 0 {
 		var tables int
 		if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_master WHERE type='table' AND name NOT IN('schema_migrations','sqlite_sequence')`).Scan(&tables); err != nil {
 			return err
 		}
-		if version != 0 || tables != 0 {
+		if tables != 0 {
 			return ErrMigrationHistory
-		}
-		if _, err = tx.ExecContext(ctx, migrationOne); err != nil {
-			return fmt.Errorf("schema migration: %w", err)
-		}
-		if installation == "" {
-			installation = newID()
-		}
-		s.identity = Identity{newID(), installation, dir}
-		if _, err = tx.ExecContext(ctx, `INSERT INTO store_identity VALUES(1,?,?,?)`, s.identity.StoreID, installation, dir); err != nil {
-			return err
-		}
-		if _, err = insertConfig(ctx, tx, config.Default()); err != nil {
-			return err
-		}
-		if _, err = tx.ExecContext(ctx, `INSERT INTO settings_head VALUES(1,1)`); err != nil {
-			return err
-		}
-		if _, err = tx.ExecContext(ctx, `INSERT INTO schema_migrations VALUES(1,?,?)`, expected, stamp(time.Now())); err != nil {
-			return err
-		}
-		if _, err = tx.ExecContext(ctx, `PRAGMA user_version=1`); err != nil {
-			return err
 		}
 	} else {
 		if err = tx.QueryRowContext(ctx, `SELECT store_id,installation_id,data_dir FROM store_identity WHERE singleton=1`).Scan(&s.identity.StoreID, &s.identity.InstallationID, &s.identity.DataDir); err != nil {
@@ -240,6 +227,33 @@ func (s *Store) migrate(ctx context.Context, dir, installation string) error {
 		}
 		if _, err = readRevision(ctx, tx, 0); err != nil {
 			return fmt.Errorf("current configuration: %w", err)
+		}
+	}
+	for next := len(versions) + 1; next <= len(migrations); next++ {
+		if _, err = tx.ExecContext(ctx, migrations[next-1]); err != nil {
+			return fmt.Errorf("schema migration %d: %w", next, err)
+		}
+		if next == 1 {
+			if installation == "" {
+				installation = newID()
+			}
+			s.identity = Identity{newID(), installation, dir}
+			if _, err = tx.ExecContext(ctx, `INSERT INTO store_identity VALUES(1,?,?,?)`, s.identity.StoreID, installation, dir); err != nil {
+				return err
+			}
+			if _, err = insertConfig(ctx, tx, config.Default()); err != nil {
+				return err
+			}
+			if _, err = tx.ExecContext(ctx, `INSERT INTO settings_head VALUES(1,1)`); err != nil {
+				return err
+			}
+		}
+		sum := sha256.Sum256([]byte(migrations[next-1]))
+		if _, err = tx.ExecContext(ctx, `INSERT INTO schema_migrations VALUES(?,?,?)`, next, hex.EncodeToString(sum[:]), stamp(time.Now())); err != nil {
+			return err
+		}
+		if _, err = tx.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version=%d", next)); err != nil {
+			return err
 		}
 	}
 	if err = s.checkpoint("migration.before_commit"); err != nil {

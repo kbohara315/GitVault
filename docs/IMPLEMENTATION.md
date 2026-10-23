@@ -1,6 +1,6 @@
 # Full-release implementation plan
 
-**Canonical execution entry point. Status: implementation in progress. I01–I06 slices are accepted for their documented Linux/amd64 implementation scopes; I05 includes automated gates and native Start/Cancel smoke, and I06 includes automated gates plus a synthetic native-store round trip and independent review. I07–I16 remain to be implemented. Non-Linux, native locked/pending-prompt, and broader filesystem/crash qualification remain pending. No release approval or universal platform qualification is implied.**
+**Canonical execution entry point. Status: implementation in progress. I01–I07 slices are accepted for their documented Linux/amd64 implementation scopes; I05 includes automated gates and native Start/Cancel smoke, I06 includes automated gates plus a synthetic native-store round trip and independent review, and I07 includes bounded synthetic GitHub discovery, durable inventory, explicit selection, all named/global gates, and independent review. I08–I16 remain to be implemented. No live GitHub request was used. Non-Linux, native locked/pending-prompt, broader native UI, and filesystem/crash qualification remain pending. No release approval or universal platform qualification is implied.**
 
 ## Destination
 

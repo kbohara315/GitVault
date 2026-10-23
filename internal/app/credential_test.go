@@ -74,8 +74,17 @@ func (f *fakeCredentialStore) Delete(ctx context.Context, h secrets.Handle) erro
 	return nil
 }
 
-func (f *fakeCredentialStore) CloseLeases()  {}
-func (f *fakeCredentialStore) Pending() bool { return f.pending }
+func (f *fakeCredentialStore) CloseLeases() {}
+func (f *fakeCredentialStore) Pending() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.pending
+}
+func (f *fakeCredentialStore) setPending(pending bool) {
+	f.mu.Lock()
+	f.pending = pending
+	f.mu.Unlock()
+}
 
 func (f *fakeCredentialStore) handles() []secrets.Handle {
 	f.mu.Lock()

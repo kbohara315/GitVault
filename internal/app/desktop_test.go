@@ -25,8 +25,8 @@ func TestLocalWorkflowSubmitIsBoundedAndRejectsUnsupportedCommands(t *testing.T)
 			t.Fatal("rejected credential bytes were not cleared")
 		}
 	}
-	if err := w.Submit(Command{Kind: Discover}); !errors.Is(err, ErrUnsupportedCommand) {
-		t.Fatalf("unsupported discovery command accepted: %v", err)
+	if err := w.Submit(Command{Kind: Restore}); !errors.Is(err, ErrUnsupportedCommand) {
+		t.Fatalf("unsupported restore command accepted: %v", err)
 	}
 	if len(w.commands) != 1 {
 		t.Fatalf("unsupported command entered queue: %d queued commands", len(w.commands))

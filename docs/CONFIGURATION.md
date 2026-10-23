@@ -1,6 +1,6 @@
 # Configuration contract
 
-**Status: the typed configuration core is implemented for current local consumers (root, concurrency, finite limits/timeouts, immutable revisions, and the I06 GitHub credential handle); I05 and I06 are accepted for their documented Linux/amd64 implementation scopes. Cloud and schedule settings remain future integration work.** This document owns settings interpretation, not the portable artifact format in `BACKUP-FORMAT.md`. Technical defaults delegated to implementation agents are not human release approval, permission to access credentials, cloud disclosure consent, or deletion authority.
+**Status: the typed configuration core is implemented for current local consumers (root, concurrency, finite limits/timeouts, immutable revisions, the I06 GitHub credential handle, and I07 display filters/stable-ID selection); I05–I07 are accepted for their documented Linux/amd64 implementation scopes. Cloud and schedule settings remain future integration work.** This document owns settings interpretation, not the portable artifact format in `BACKUP-FORMAT.md`. Technical defaults delegated to implementation agents are not human release approval, permission to access credentials, cloud disclosure consent, or deletion authority.
 
 ## Ownership and composition
 
@@ -46,6 +46,7 @@ These are recommended operational budgets, not claims every machine can process 
 | `backup.keep_mirror` | `true` | boolean; false only requests separately scoped post-run mirror cleanup | next run |
 | `selection.repository_ids` | `[]` | unique stable provider IDs; at most 10,000; each 1–256 UTF-8 bytes | next run |
 | `github.credential` | `null` | null or credential handle defined below | next run |
+| `github.filters` | owned, organizations, collaborating = `true`; exclude forks = `false` | display-only booleans; never changes explicit selection | live view after revision save |
 | `github.rate_limit_wait` | `"15m"` | 0–60 min; zero fails rather than waits | next run |
 | `limits.manifest_bytes` | 4 MiB | integer 64 KiB–16 MiB | next run |
 | `limits.reference_count` | 100,000 | integer 1–1,000,000; manifest limit also applies | next run |
@@ -148,7 +149,11 @@ For missed occurrences produce **at most one catch-up offer**, never automatic e
     "keep_mirror": true
   },
   "selection": { "repository_ids": [] },
-  "github": { "credential": null, "rate_limit_wait": "15m" },
+  "github": {
+    "credential": null,
+    "filters": { "owned": true, "organizations": true, "collaborating": true, "exclude_forks": false },
+    "rate_limit_wait": "15m"
+  },
   "limits": {
     "manifest_bytes": 4194304,
     "reference_count": 100000,

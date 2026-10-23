@@ -15,7 +15,7 @@ go tool mygo dev
 
 Use the pinned CLI through `go tool mygo`. Do not use `@latest` for routine builds. MyGo v0.6.2 requires Go 1.27.1; automatic toolchain selection needs download access on the first run.
 
-No `.env` file is required. The Repositories page accepts a masked GitHub PAT into the OS credential store; this I06 slice does not contact GitHub or acquire repositories. Do not add credentials to `mygo.json`. Default builds use the development secret namespace; production namespace selection is a build tag, not release qualification.
+No `.env` file is required. The Repositories page accepts a masked GitHub PAT into the OS credential store. An explicit discovery action uses bounded HTTPS REST requests to list repository metadata; it does not fetch Git data or start a backup. Synthetic tests only were used for I07; no live GitHub request or real credential was used. Do not add credentials to `mygo.json`. Default builds use the development secret namespace; production namespace selection is a build tag, not release qualification.
 
 ## Packaging
 
