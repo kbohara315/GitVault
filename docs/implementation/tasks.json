@@ -46,7 +46,7 @@
       "evidence": [], "review": {"status": "PENDING", "correction_rounds": 0, "approval": null}
     },
     {
-      "id": "I03", "name": "Offline full snapshot and no-replace bare restore", "dependencies": ["I01", "I02"], "status": "IN_PROGRESS",
+      "id": "I03", "name": "Offline full snapshot and no-replace bare restore", "dependencies": ["I01", "I02"], "status": "DONE",
       "required_assertions": ["TestSnapshotRefAndHeadCoverage rejects unrecognizable/unqualified absent HEAD with no artifact; never invent a default branch or claim unsupported preservation."],
       "owned_paths": ["internal/backup/engine*.go", "internal/backup/create*.go", "internal/backup/verify*.go", "internal/backup/restore*.go", "internal/backup/filesystem*.go", "internal/backup/ownership*.go", "docs/BACKUP-FORMAT.md", "docs/RECOVERY-SEMANTICS.md", ".github/workflows/ci.yml"],
       "purpose": "Prove independent recovery from one immutable full artifact before adding services.",
@@ -57,7 +57,7 @@
       "stop_conditions": ["No safe no-replace primitive on claimed filesystem", "Cannot prove offline independence or exact saved refs/HEAD", "Coverage change or resource policy requires unapproved contract change"],
       "platform_evidence": "Native collision, crash-boundary and process tests per OS/filesystem; record durability limits. Race tests on supported hosts; foreign OS qualification may remain explicitly blocked.",
       "test_gates": [{"name": "offline_recovery", "package": "./internal/backup", "tests": ["TestOfflineRoundTrip", "TestSnapshotRefAndHeadCoverage", "TestPublishNeverReplaces", "TestPublishRejectsUnsafePaths", "TestConflictingRoots", "TestConcurrentWriters", "TestRestoreRejectsCorruption", "TestRestoreInputMutation", "TestBackupCancellation", "TestFailureBoundaries", "TestDiskFull", "TestProgressDoesNotBlock"], "command": "go test ./internal/backup -run '^(TestOfflineRoundTrip|TestSnapshotRefAndHeadCoverage|TestPublishNeverReplaces|TestPublishRejectsUnsafePaths|TestConflictingRoots|TestConcurrentWriters|TestRestoreRejectsCorruption|TestRestoreInputMutation|TestBackupCancellation|TestFailureBoundaries|TestDiskFull|TestProgressDoesNotBlock)$' -count=1", "expected": "Twelve tests run/pass, covering existing destinations, empty/tag-only/unborn/detached sources, deleted refs, raw tags, valid extra objects, corruption and post-publication failure."}],
-      "evidence": [], "review": {"status": "PENDING", "correction_rounds": 0, "approval": null}
+       "evidence": ["/tmp/opencode/gitvault-i03-evidence/I03-record.md"], "review": {"status": "ACCEPTED", "correction_rounds": 0, "approval": "Independent read-only openai/gpt-6-luna review accepted Linux host scope after evidence/tracker completion; macOS/Windows and other filesystem qualification remain pending."}
     },
     {
       "id": "I04", "name": "SQLite durable jobs and reconciliation", "dependencies": ["I03"], "status": "TODO",

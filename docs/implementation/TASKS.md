@@ -23,7 +23,7 @@ Read [the runbook](../AGENT-RUNBOOK.md), [MODULES](../MODULES.md), [RECOVERY-SEM
 | --- | --- | --- | --- |
 | I01 | Bounded full-snapshot contract | — | DONE |
 | I02 | Controlled Git and process-tree lifetime | I01 | DONE (Linux runner) |
-| I03 | Offline full snapshot and no-replace bare restore | I01, I02 | IN_PROGRESS |
+| I03 | Offline full snapshot and no-replace bare restore | I01, I02 | DONE (Linux host; other platforms/filesystems pending) |
 | I04 | SQLite durable jobs and reconciliation | I03 | TODO |
 | I05 | Typed revisions and responsive native local workflow | I04 | TODO |
 | I06 | MyGo-native secrets and PAT broker onboarding | I05, I02 | TODO |
@@ -78,7 +78,7 @@ Dependency availability is not edit-disjointness: I09/I14 can be logically avail
 
 ## I03 — Offline full snapshot and no-replace bare restore
 
-**Purpose:** first end-to-end recoverable artifact. **Dependencies:** I01, I02. **Status:** IN_PROGRESS.
+**Purpose:** first end-to-end recoverable artifact. **Dependencies:** I01, I02. **Status:** DONE for Linux host scope only; macOS/Windows execution and additional filesystem/crash qualification remain pending. Retained evidence: `/tmp/opencode/gitvault-i03-evidence/I03-record.md`.
 
 **Allowed:** `internal/backup/{engine*,create*,verify*,restore*,filesystem*,ownership*}.go`, `docs/{BACKUP-FORMAT,RECOVERY-SEMANTICS}.md`, `.github/workflows/ci.yml` only to execute real engine tests, common status paths. Necessary dependency/scope changes require review first.
 
@@ -93,7 +93,7 @@ Dependency availability is not edit-disjointness: I09/I14 can be logically avail
 
 **Tests/gates:** `offline_recovery`: `TestOfflineRoundTrip`, `TestSnapshotRefAndHeadCoverage`, `TestPublishNeverReplaces`, `TestPublishRejectsUnsafePaths`, `TestConflictingRoots`, `TestConcurrentWriters`, `TestRestoreRejectsCorruption`, `TestRestoreInputMutation`, `TestBackupCancellation`, `TestFailureBoundaries`, `TestDiskFull`, `TestProgressDoesNotBlock`. `go test ./internal/backup -count=1`, exact gate and G: twelve run/pass. Assert raw refs/HEAD, deletion between snapshots, valid extra objects and source-inaccessible restore, not just Git exit 0. Required progress test exercises a real nonblocking observer, not an empty placeholder.
 
-**Failure/cancel/restart:** no-replace visibility commit fixes artifact identity even if later sync fails. Preserve uncertain publication; no blind fresh-ID retry. Reap before cleanup/unlock. **Stop:** unsafe publication primitive, unproved independence/coverage, unapproved policy change. **Platform evidence:** native race/crash/process tests per claimed OS/filesystem and documented durability limits; race detector where supported.
+**Failure/cancel/restart:** no-replace visibility commit fixes artifact identity even if later sync fails. Preserve uncertain publication; no blind fresh-ID retry. Reap before cleanup/unlock. **Stop:** unsafe publication primitive, unproved independence/coverage, unapproved policy change. **Platform evidence:** Linux/amd64 host gates, full backup package, all global gates and race suite passed; native race/crash/process tests on other claimed OS/filesystem combinations remain pending. Directory sync uncertainty is reported separately from visibility. See retained evidence above.
 
 ## I04 — SQLite durable jobs and reconciliation
 
