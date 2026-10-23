@@ -1,6 +1,6 @@
 # Data model and state
 
-**Status: planned.** No database dependency or migration exists yet.
+**Status: initial SQLite/configuration modules implemented and reviewed; coordinator integration and full recovery reconciliation remain incomplete.** The current store is an incremental subset of this logical model, not the full schema described below.
 
 Execution authority: [IMPLEMENTATION.md](IMPLEMENTATION.md). Transition/commit semantics: [RECOVERY-SEMANTICS.md](RECOVERY-SEMANTICS.md). This logical schema is introduced incrementally; it is not an instruction to create every table in the first migration.
 
