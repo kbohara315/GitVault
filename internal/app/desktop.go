@@ -229,7 +229,7 @@ func (w *LocalWorkflow) Submit(command Command) error {
 	inputSecret := command.Secret
 	defer clear(inputSecret)
 	switch command.Kind {
-	case Refresh, BindRoot, SaveSettings, BackupLocal, Cancel, SaveToken, RemoveToken, Discover, SelectRepository, SetRepositoryFilters:
+	case Refresh, BindRoot, SaveSettings, BackupLocal, BackupSelected, RetryGitHubTask, Cancel, SaveToken, RemoveToken, Discover, SelectRepository, SetRepositoryFilters:
 	default:
 		return ErrUnsupportedCommand
 	}
@@ -247,7 +247,7 @@ func (w *LocalWorkflow) Submit(command Command) error {
 	if command.Kind == RemoveToken && w.credentials == nil {
 		return ErrCredentialUnavailable
 	}
-	for _, value := range []string{command.Source, command.Root, command.RepositoryID, command.Settings.Root, command.Settings.Concurrency} {
+	for _, value := range []string{command.Source, command.Root, command.RepositoryID, command.RunID, command.Settings.Root, command.Settings.Concurrency} {
 		if len(value) > 32768 {
 			clear(command.Secret)
 			return errors.New("command input exceeds its bound")
@@ -264,7 +264,7 @@ func (w *LocalWorkflow) Submit(command Command) error {
 		clear(command.Secret)
 		return ErrCredentialOperationPending
 	}
-	if w.state.Busy && (command.Kind == Discover || command.Kind == SelectRepository || command.Kind == SetRepositoryFilters) {
+	if w.state.Busy && (command.Kind == Discover || command.Kind == SelectRepository || command.Kind == SetRepositoryFilters || command.Kind == BackupSelected || command.Kind == RetryGitHubTask) {
 		clear(command.Secret)
 		return ErrWorkflowBusy
 	}
@@ -319,6 +319,10 @@ func (w *LocalWorkflow) handle(command Command) {
 		w.bindRoot(command)
 	case BackupLocal:
 		w.startLocal(command)
+	case BackupSelected:
+		w.startSelectedBackup(command)
+	case RetryGitHubTask:
+		w.retryGitHubTask(command)
 	case SaveToken:
 		w.saveGitHubToken(command)
 	case RemoveToken:
@@ -509,6 +513,7 @@ func (w *LocalWorkflow) startLocal(command Command) {
 		s.Busy = true
 		s.CanCancel = true
 		s.CanStartLocal = false
+		s.CanStartSelected = false
 		s.CanBindRoot = false
 		s.Status = "Local backup is running."
 		s.Error = ""
@@ -527,7 +532,7 @@ func (w *LocalWorkflow) startLocal(command Command) {
 
 func (w *LocalWorkflow) cancelRun() {
 	if w.coordinator == nil || w.activeRunID == "" {
-		w.setError("There is no cancellable local backup owned by this window.")
+		w.setError("There is no cancellable backup run owned by this window.")
 		return
 	}
 	if err := w.coordinator.Cancel(w.ctx, w.activeRunID); err != nil {
@@ -541,16 +546,25 @@ func (w *LocalWorkflow) cancelRun() {
 }
 
 func (w *LocalWorkflow) handleProgress(progress backup.ProgressEvent) {
-	if w.activeRunID == "" || progress.RepositoryID != w.activeRepoID {
+	if w.activeRunID == "" {
 		return
 	}
 	w.mutate(func(s *ViewState) {
-		s.Status = "Local backup: " + progress.Stage
-		if len(s.Tasks) == 0 {
-			s.Tasks = []TaskView{{Repository: "Local repository"}}
+		s.Status = "Backup: " + progress.Stage
+		matched := false
+		for i := range s.Tasks {
+			if s.Tasks[i].RepositoryID == progress.RepositoryID || progress.RepositoryID == w.activeRepoID && s.Tasks[i].Repository == "Local repository" {
+				s.Tasks[i].Stage = progress.Stage
+				s.Tasks[i].Detail = "Working in the background."
+				matched = true
+			}
 		}
-		s.Tasks[0].Stage = progress.Stage
-		s.Tasks[0].Detail = "Working in the background."
+		if len(s.Tasks) == 0 {
+			s.Tasks = []TaskView{{Repository: "Local repository", Stage: progress.Stage, Detail: "Working in the background."}}
+		}
+		if !matched && progress.RepositoryID != "" {
+			return
+		}
 	})
 }
 
@@ -610,6 +624,7 @@ func (w *LocalWorkflow) refreshDurableView(ctx context.Context) {
 		s.Settings = settingsDraft(values)
 		s.Filters = values.GitHub.Filters
 		s.CredentialConfigured = values.GitHub.Credential != nil
+		s.SelectedRepositoryCount = len(values.Selection.RepositoryIDs)
 		s.CredentialBusy = w.credentials != nil && w.credentials.Pending()
 		s.Connected = true
 	})
@@ -657,13 +672,33 @@ func (w *LocalWorkflow) refreshDurableView(ctx context.Context) {
 	if w.lastRunID != "" {
 		tasks, listErr := w.store.ListTasks(ctx, w.lastRunID, 100)
 		if listErr == nil {
+			run, runErr := w.store.GetRun(ctx, w.lastRunID)
+			names := make(map[string]string, len(repositories))
+			available := make(map[string]bool, len(repositories))
+			for _, repository := range repositories {
+				names[repository.ID] = repository.FullName
+				available[repository.ID] = repository.Available
+			}
+			selected := make(map[string]bool, len(values.Selection.RepositoryIDs))
+			for _, id := range values.Selection.RepositoryIDs {
+				selected[id] = true
+			}
 			views := make([]TaskView, 0, len(tasks))
 			for _, task := range tasks {
 				detail := task.Outcome
 				if task.ErrorCode != "" {
 					detail = task.ErrorCode
 				}
-				views = append(views, TaskView{Repository: "Local repository", Stage: task.Stage, Detail: detail})
+				repository, repositoryID := "Local repository", ""
+				canRetry := false
+				if task.Provider == "github" {
+					repository, repositoryID = names[task.RepositoryID], "github:"+task.RepositoryID
+					if repository == "" {
+						repository = task.RepositoryID
+					}
+					canRetry = runErr == nil && !w.Snapshot().Busy && retryableGitHubTask(run.State, task) && selected[repositoryID] && available[task.RepositoryID]
+				}
+				views = append(views, TaskView{Repository: repository, RepositoryID: repositoryID, RunID: w.lastRunID, Stage: task.Stage, Detail: detail, CanRetry: canRetry})
 			}
 			if len(views) > 0 {
 				w.mutate(func(s *ViewState) { s.Tasks = views })
@@ -671,6 +706,13 @@ func (w *LocalWorkflow) refreshDurableView(ctx context.Context) {
 		}
 	}
 	w.recomputeControls()
+}
+
+func retryableGitHubTask(runState string, task store.Task) bool {
+	if (runState != "failed" && runState != "partial" && runState != "cancelled") || task.Provider != "github" || task.Stage != "failed" || task.Outcome != "failed" || task.PublicationState != string(backup.NotPublished) || task.ArtifactID != "" || task.ArtifactPath != "" {
+		return false
+	}
+	return task.ErrorCode == "engine_failed" || task.ErrorCode == "operation_timeout"
 }
 
 func verificationLabel(v store.Verification) string {
@@ -694,6 +736,8 @@ func (w *LocalWorkflow) recomputeControls() {
 	bound := w.hasRoot && w.coordinator != nil && w.ready && w.coordinator.Ready()
 	configured := current.Config().Backup.Root != nil && w.hasRoot && *current.Config().Backup.Root == w.root.Path
 	state.CanStartLocal = !busy && bound && configured
+	values := current.Config()
+	state.CanStartSelected = !busy && bound && configured && w.discovery != nil && w.credentials != nil && values.GitHub.Credential != nil && len(values.Selection.RepositoryIDs) > 0
 	state.CanBindRoot = !busy && !w.closed && !w.rootRebindBlocked
 	state.CanCancel = w.activeRunID != "" || w.discoveryCancel != nil
 	state.CredentialBusy = w.credentials != nil && w.credentials.Pending()

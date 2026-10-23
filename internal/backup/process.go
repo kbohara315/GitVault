@@ -120,7 +120,7 @@ func (w *suppressedDiagnostics) summary() string {
 // process-lifetime tests may call it. No shell or caller environment is added.
 // Direct OS pipe ownership avoids Cmd.Wait waiting indefinitely for a grandchild
 // that inherited stdout after the direct child has exited.
-func runOwnedProcess(ctx context.Context, executable string, args, env []string, dir string, input []byte, o GitRunnerOptions) (processOutput, error) {
+func runOwnedProcess(ctx context.Context, executable string, args, env []string, dir string, input []byte, o GitRunnerOptions, onStart func(int) error) (processOutput, error) {
 	var out processOutput
 	if err := ctx.Err(); err != nil {
 		return out, &GitCommandError{ExitCode: -1, cause: err}
@@ -151,12 +151,26 @@ func runOwnedProcess(ctx context.Context, executable string, args, env []string,
 	defer stderrW.Close()
 	cmd.Stdout = stdoutW
 	cmd.Stderr = stderrW
-	configureOwnedProcess(cmd)
+	configureOwnedProcess(cmd, onStart != nil)
 	if err = cmd.Start(); err != nil {
 		return out, &GitCommandError{ExitCode: -1, cause: ErrGitUnavailable}
 	}
 	_ = stdoutW.Close()
 	_ = stderrW.Close()
+	if onStart != nil {
+		if err = waitOwnedStart(cmd); err == nil {
+			err = onStart(cmd.Process.Pid)
+		}
+		if err == nil {
+			err = releaseOwnedStart(cmd)
+		}
+		if err != nil {
+			terminateOwnedProcess(cmd)
+			_ = releaseOwnedStart(cmd)
+			_ = cmd.Wait()
+			return out, &GitCommandError{ExitCode: -1, cause: err}
+		}
+	}
 	overflow := make(chan struct{}, 1)
 	machine := &cappedOutput{limit: o.MachineOutputBytes, signal: overflow}
 	diagnostic := &suppressedDiagnostics{limit: o.DiagnosticBytes}
@@ -220,6 +234,9 @@ func runOwnedProcess(ctx context.Context, executable string, args, env []string,
 		return out, &GitCommandError{ExitCode: cmd.ProcessState.ExitCode(), Diagnostic: out.diagnostic, cause: cause}
 	}
 	if waitErr != nil {
+		if cmd.ProcessState != nil && cmd.ProcessState.ExitCode() < 0 {
+			return out, &GitCommandError{ExitCode: -1, Diagnostic: out.diagnostic, cause: errors.New("controlled Git process was terminated by a signal")}
+		}
 		return out, &GitCommandError{ExitCode: cmd.ProcessState.ExitCode(), Diagnostic: out.diagnostic}
 	}
 	out.stdout = append([]byte(nil), machine.data.Bytes()...)

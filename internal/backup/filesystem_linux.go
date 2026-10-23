@@ -183,6 +183,41 @@ func (e *Engine) lock(ctx context.Context, exclusive bool) (func(), error) {
 	}
 }
 
+func lockGitHubMirror(ctx context.Context, mirrorRoot, repositoryID string) (func(), error) {
+	if !canonicalGitHubRepositoryID(repositoryID) || ctx == nil {
+		return nil, ErrUnsafeRepository
+	}
+	if err := ensurePrivateDir(mirrorRoot); err != nil {
+		return nil, err
+	}
+	lockDir := filepath.Join(mirrorRoot, ".locks")
+	if err := ensurePrivateDir(lockDir); err != nil {
+		return nil, err
+	}
+	path := filepath.Join(lockDir, repositoryID+".lock")
+	fd, err := unix.Open(path, unix.O_CREAT|unix.O_RDWR|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0600)
+	if err != nil {
+		return nil, ErrUnsafeRepository
+	}
+	f := os.NewFile(uintptr(fd), path)
+	for {
+		err = unix.Flock(fd, unix.LOCK_EX|unix.LOCK_NB)
+		if err == nil {
+			return func() { _ = unix.Flock(fd, unix.LOCK_UN); _ = f.Close() }, nil
+		}
+		if err != unix.EWOULDBLOCK && err != unix.EAGAIN {
+			_ = f.Close()
+			return nil, ErrUnsafeRepository
+		}
+		select {
+		case <-ctx.Done():
+			_ = f.Close()
+			return nil, ctx.Err()
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+}
+
 type rootMarker struct {
 	Version         int    `json:"version"`
 	RootID          string `json:"root_id"`

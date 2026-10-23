@@ -23,6 +23,7 @@ type RunIntent struct {
 	Trigger         string   `json:"trigger"`
 	Kind            string   `json:"kind"`
 	RootID          string   `json:"root_id,omitempty"`
+	AccountID       string   `json:"account_id,omitempty"`
 	RepositoryIDs   []string `json:"repository_ids"`
 	SourcePath      string   `json:"source_path,omitempty"`
 	DestinationPath string   `json:"destination_path,omitempty"`
@@ -131,6 +132,126 @@ func (s *Store) BeginRun(ctx context.Context, intent RunIntent) (Run, error) {
 		return Run{}, err
 	}
 	return Run{ID: intent.ID, Trigger: intent.Trigger, State: "preparing", Intent: captured, Config: revision, StartedAt: at}, nil
+}
+
+// BeginGitHubRun atomically commits the captured selection and all reserved
+// per-repository task/snapshot identities. expectedRevision prevents a stale UI
+// selection from being admitted after settings have changed.
+func (s *Store) BeginGitHubRun(ctx context.Context, intent RunIntent, expectedRevision int64, tasks []Task) (Run, []Task, error) {
+	if ctx == nil || expectedRevision < 1 || intent.Kind != "github_backup" || !validNumericID(intent.AccountID) {
+		return Run{}, nil, errors.New("invalid GitHub run intent")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Run{}, nil, err
+	}
+	defer tx.Rollback()
+	revision, err := readRevision(ctx, tx, 0)
+	if err != nil {
+		return Run{}, nil, err
+	}
+	if revision.ID() != expectedRevision {
+		return Run{}, nil, ErrConflict
+	}
+	values := revision.Config()
+	selection := values.Selection.RepositoryIDs
+	if len(selection) == 0 || len(selection) > 10000 || len(intent.RepositoryIDs) == 0 || len(intent.RepositoryIDs) > len(selection) || len(tasks) != len(intent.RepositoryIDs) || values.GitHub.Credential == nil {
+		return Run{}, nil, errors.New("GitHub backup requires a credential and non-empty explicit selection")
+	}
+	if intent.ID == "" {
+		intent.ID = newID()
+	}
+	if !validID(intent.ID) {
+		return Run{}, nil, errors.New("invalid run ID")
+	}
+	if intent.Trigger == "" {
+		intent.Trigger = "manual"
+	}
+	if intent.Trigger != "manual" && intent.Trigger != "retry" {
+		return Run{}, nil, errors.New("invalid GitHub run trigger")
+	}
+	if intent.Trigger == "manual" && len(intent.RepositoryIDs) != len(selection) || len(intent.RepositoryIDs) != len(tasks) {
+		return Run{}, nil, ErrConflict
+	}
+	selected := make(map[string]bool, len(selection))
+	for _, id := range selection {
+		selected[id] = true
+	}
+	seenRepositories := make(map[string]bool, len(intent.RepositoryIDs))
+	for _, id := range intent.RepositoryIDs {
+		if !selected[id] || !strings.HasPrefix(id, "github:") || !validNumericID(strings.TrimPrefix(id, "github:")) || seenRepositories[id] {
+			return Run{}, nil, ErrConflict
+		}
+		seenRepositories[id] = true
+	}
+	intent.RepositoryIDs = append([]string(nil), intent.RepositoryIDs...)
+	if intent.RootID == "" || values.Backup.Root == nil {
+		return Run{}, nil, errors.New("GitHub backup requires a configured managed root")
+	}
+	root, err := readRoot(ctx, tx, s.identity, intent.RootID, true)
+	if err != nil {
+		return Run{}, nil, err
+	}
+	if root.Path != *values.Backup.Root {
+		return Run{}, nil, errors.New("GitHub backup root is not the captured configuration root")
+	}
+	var latestAccount string
+	if err = tx.QueryRowContext(ctx, `SELECT account_id FROM github_accounts WHERE provider='github' ORDER BY attempted_at DESC,account_id LIMIT 1`).Scan(&latestAccount); err != nil || latestAccount != intent.AccountID {
+		return Run{}, nil, errors.New("GitHub account inventory changed before admission")
+	}
+	for _, id := range intent.RepositoryIDs {
+		repositoryID := strings.TrimPrefix(id, "github:")
+		var exists int
+		if err = tx.QueryRowContext(ctx, `SELECT 1 FROM github_repositories WHERE provider='github' AND account_id=? AND repository_id=? AND availability='available'`, intent.AccountID, repositoryID).Scan(&exists); err != nil {
+			return Run{}, nil, errors.New("a selected repository is not available in the captured account inventory")
+		}
+	}
+	var active string
+	err = tx.QueryRowContext(ctx, `SELECT id FROM backup_runs WHERE state IN('preparing','running','cancelling')`).Scan(&active)
+	if err == nil {
+		return Run{}, nil, &BusyError{RunID: active}
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return Run{}, nil, err
+	}
+	seenTasks := make(map[string]bool, len(tasks))
+	for i := range tasks {
+		task := &tasks[i]
+		task.RunID = intent.ID
+		task.Provider = "github"
+		task.RepositoryID = strings.TrimPrefix(intent.RepositoryIDs[i], "github:")
+		if !validID(task.ID) || !validID(task.OperationID) || seenTasks[task.ID] || seenTasks[task.OperationID] || task.Stage != "pending" && task.Stage != "" || task.Outcome != "pending" && task.Outcome != "" {
+			return Run{}, nil, errors.New("invalid GitHub task reservation")
+		}
+		seenTasks[task.ID] = true
+		seenTasks[task.OperationID] = true
+		task.Stage, task.Outcome, task.Attempt = "pending", "pending", 1
+		task.PublicationState, task.CloudOutcome = "not_published", "not_requested"
+	}
+	body, err := json.Marshal(intent)
+	if err != nil || len(body) > config.MaxJSONBytes {
+		return Run{}, nil, errors.New("GitHub run intent exceeds its storage budget")
+	}
+	at := time.Now().UTC()
+	if _, err = tx.ExecContext(ctx, `INSERT INTO backup_runs(id,trigger,state,config_revision_id,intent,started_at) VALUES(?,?,'preparing',?,?,?)`, intent.ID, intent.Trigger, revision.ID(), string(body), stamp(at)); err != nil {
+		return Run{}, nil, err
+	}
+	for _, task := range tasks {
+		if _, err = tx.ExecContext(ctx, `INSERT INTO repository_tasks VALUES(?,?,?,?,?,'pending','pending',1,NULL,'','','not_published','not_requested','')`, task.ID, task.RunID, task.RepositoryID, task.Provider, task.OperationID); err != nil {
+			return Run{}, nil, err
+		}
+	}
+	if err = s.checkpoint("run.before_commit"); err != nil {
+		return Run{}, nil, err
+	}
+	if err = tx.Commit(); err != nil {
+		return Run{}, nil, err
+	}
+	var captured RunIntent
+	if err = json.Unmarshal(body, &captured); err != nil {
+		return Run{}, nil, err
+	}
+	return Run{ID: intent.ID, Trigger: intent.Trigger, State: "preparing", Intent: captured, Config: revision, StartedAt: at}, tasks, nil
 }
 func terminal(state string) bool {
 	switch state {

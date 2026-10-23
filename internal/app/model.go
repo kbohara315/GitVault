@@ -20,6 +20,7 @@ const (
 	SetRepositoryFilters CommandKind = "set_repository_filters"
 	BackupLocal          CommandKind = "backup_local"
 	BackupSelected       CommandKind = "backup_selected"
+	RetryGitHubTask      CommandKind = "retry_github_task"
 	Cancel               CommandKind = "cancel"
 	Restore              CommandKind = "restore"
 	SaveSettings         CommandKind = "save_settings"
@@ -37,15 +38,15 @@ const (
 // Command is copied into a bounded admission queue. Sensitive fields are never
 // serialized to settings/history/logs; the receiver consumes and discards them.
 type Command struct {
-	ExpectedRevision                                                  int64
-	Kind                                                              CommandKind
-	Source, Root, SnapshotID, SnapshotPath, Destination, RepositoryID string
-	Selected, Confirm                                                 bool
-	Secret                                                            []byte
-	Filters                                                           config.GitHubFilters
-	Settings                                                          SettingsDraft
-	Schedule                                                          ScheduleDraft
-	Retention                                                         RetentionDraft
+	ExpectedRevision                                                         int64
+	Kind                                                                     CommandKind
+	Source, Root, SnapshotID, SnapshotPath, Destination, RepositoryID, RunID string
+	Selected, Confirm                                                        bool
+	Secret                                                                   []byte
+	Filters                                                                  config.GitHubFilters
+	Settings                                                                 SettingsDraft
+	Schedule                                                                 ScheduleDraft
+	Retention                                                                RetentionDraft
 }
 
 type SettingsDraft struct {
@@ -72,24 +73,28 @@ type SnapshotView struct {
 
 type TaskView struct {
 	Repository, Stage, Detail string
+	RepositoryID              string
+	RunID                     string
+	CanRetry                  bool
 	Bytes, TotalBytes         int64
 }
 
 type ViewState struct {
-	Revision                                                  int64
-	Busy, CanCancel, CanBindRoot, CanStartLocal, Connected    bool
-	CredentialConfigured, CanManageCredential, CredentialBusy bool
-	DiscoveryBusy, CanDiscover, InventoryComplete             bool
-	Status, Notice, Error, Account                            string
-	Filters                                                   config.GitHubFilters
-	Settings                                                  SettingsDraft
-	Schedule                                                  ScheduleDraft
-	Retention                                                 RetentionDraft
-	Repositories                                              []RepositoryView
-	Snapshots                                                 []SnapshotView
-	Remote                                                    []SnapshotView
-	Tasks                                                     []TaskView
-	RetentionPreviewID, RetentionSummary, CatchUpOffer        string
+	Revision                                                                 int64
+	Busy, CanCancel, CanBindRoot, CanStartLocal, CanStartSelected, Connected bool
+	CredentialConfigured, CanManageCredential, CredentialBusy                bool
+	DiscoveryBusy, CanDiscover, InventoryComplete                            bool
+	Status, Notice, Error, Account                                           string
+	Filters                                                                  config.GitHubFilters
+	Settings                                                                 SettingsDraft
+	Schedule                                                                 ScheduleDraft
+	Retention                                                                RetentionDraft
+	Repositories                                                             []RepositoryView
+	Snapshots                                                                []SnapshotView
+	Remote                                                                   []SnapshotView
+	Tasks                                                                    []TaskView
+	RetentionPreviewID, RetentionSummary, CatchUpOffer                       string
+	SelectedRepositoryCount                                                  int
 }
 
 // Backend's snapshot is an in-memory copy, not a database/network query. Submit

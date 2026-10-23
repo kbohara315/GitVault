@@ -1,6 +1,6 @@
 # Architecture
 
-**Status: target design.** I01–I07 are accepted for their documented Linux/amd64 implementation scopes. I07 includes GitHub REST discovery and explicit selection; Git acquisition and later integrations remain incomplete. The design below describes the full target, not the current qualification level. [IMPLEMENTATION.md](IMPLEMENTATION.md) is the canonical execution entry point; [MODULES.md](MODULES.md) defines module ownership and composition. Existing numbered plans are historical, not competing execution instructions.
+**Status: target design.** I01–I08 are accepted for their documented Linux/amd64 implementation scopes. I07 includes GitHub REST discovery and explicit selection; I08 adds selected HTTPS Git acquisition through verified local snapshots using synthetic-provider evidence. Later integrations remain incomplete, and no live GitHub request or real credential was used. The design below describes the full target, not the current qualification level. [IMPLEMENTATION.md](IMPLEMENTATION.md) is the canonical execution entry point; [MODULES.md](MODULES.md) defines module ownership and composition. Existing numbered plans are historical, not competing execution instructions.
 
 ## System context
 

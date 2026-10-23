@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -37,6 +38,7 @@ type CredentialBrokerOptions struct {
 	Username          string
 	Secret            []byte
 	Executable        string
+	HelperPrefix      []string
 }
 
 // CredentialBroker exposes only a nonsecret locator to the job. PermitGroup must
@@ -45,7 +47,13 @@ type CredentialBrokerOptions struct {
 // variables. Keep the leader alive until Close; group identity is rechecked.
 // Close revokes access, closes pending connections, waits, and clears owned secret
 // bytes (best effort, not a claim of complete Go/runtime memory erasure).
-type CredentialBroker struct{ platform credentialBrokerPlatform }
+type CredentialBroker struct {
+	platform          credentialBrokerPlatform
+	allowedHost       string
+	allowedRepository string
+	helperPrefix      []string
+	testOnly          bool
+}
 
 type credentialBrokerPlatform interface {
 	permitGroup(int) error
@@ -54,18 +62,47 @@ type credentialBrokerPlatform interface {
 }
 
 func NewCredentialBroker(o CredentialBrokerOptions) (*CredentialBroker, error) {
-	if o.Context == nil || o.Context.Err() != nil || o.AllowedHost != "github.com" || !credentialRepository(o.AllowedRepository) || !credentialValue(o.Username, 256) || !credentialBytes(o.Secret, credentialSecretLimit) || !filepath.IsAbs(o.PrivateDir) || !filepath.IsAbs(o.Executable) {
+	return newCredentialBroker(o, false)
+}
+
+// NewCredentialBrokerForTesting is restricted to loopback HTTPS fixture hosts.
+// Production workflow construction must call NewCredentialBroker instead.
+func NewCredentialBrokerForTesting(o CredentialBrokerOptions) (*CredentialBroker, error) {
+	return newCredentialBroker(o, true)
+}
+
+func newCredentialBroker(o CredentialBrokerOptions, testOnly bool) (*CredentialBroker, error) {
+	allowedHost := o.AllowedHost == "github.com"
+	if testOnly {
+		allowedHost = validLoopbackAuthority(o.AllowedHost)
+	}
+	if o.Context == nil || o.Context.Err() != nil || !allowedHost || !credentialRepository(o.AllowedRepository) || !credentialValue(o.Username, 256) || !credentialBytes(o.Secret, credentialSecretLimit) || !filepath.IsAbs(o.PrivateDir) || !filepath.IsAbs(o.Executable) {
 		return nil, ErrCredentialDenied
+	}
+	if !testOnly && len(o.HelperPrefix) != 0 {
+		return nil, ErrCredentialDenied
+	}
+	if len(o.HelperPrefix) > 8 {
+		return nil, ErrCredentialDenied
+	}
+	for _, argument := range o.HelperPrefix {
+		if len(argument) == 0 || len(argument) > 256 || strings.ContainsAny(argument, "\x00\r\n") {
+			return nil, ErrCredentialDenied
+		}
 	}
 	p, err := newCredentialBrokerPlatform(o)
 	if err != nil {
 		return nil, err
 	}
-	return &CredentialBroker{platform: p}, nil
+	return &CredentialBroker{platform: p, allowedHost: o.AllowedHost, allowedRepository: o.AllowedRepository, helperPrefix: append([]string(nil), o.HelperPrefix...), testOnly: testOnly}, nil
 }
 
 func (b *CredentialBroker) PermitGroup(pid int) error { return b.platform.permitGroup(pid) }
 func (b *CredentialBroker) Close() error              { return b.platform.close() }
+
+func (b *CredentialBroker) matchesGitHubRemote(host, repository string) bool {
+	return b != nil && b.allowedHost == host && strings.EqualFold(b.allowedRepository, repository)
+}
 
 // HelperArguments are nonsecret argv for direct helper execution. Git itself
 // appends "get" (or store/erase, which this helper refuses).
@@ -86,7 +123,11 @@ func (b *CredentialBroker) GitHelperConfig(executable string) (string, error) {
 	if !credentialSameExecutable(executable) {
 		return "", ErrCredentialDenied
 	}
-	args := append([]string{executable}, b.HelperArguments()...)
+	args := []string{executable}
+	if b.testOnly {
+		args = append(args, b.helperPrefix...)
+	}
+	args = append(args, b.HelperArguments()...)
 	for i := range args {
 		args[i] = "'" + strings.ReplaceAll(args[i], "'", "'\\''") + "'"
 	}
@@ -151,9 +192,10 @@ func credentialRepository(s string) bool {
 	return true
 }
 
-// credentialRequest accepts exactly three Git attributes, ending at blank or EOF.
-// Reader buffering is bounded. Unknown/duplicate attributes, controls, HTTP ports,
-// URLs, username/password attributes and alternate path spellings are rejected.
+// credentialRequest accepts the three scoped Git attributes plus the current
+// protocol's bounded, non-authorizing capability[] and wwwauth[] metadata. The
+// latter values are discarded. Unknown attributes, controls, HTTP ports, URLs,
+// username/password attributes and alternate path spellings are rejected.
 func credentialRequest(r io.Reader) (host, path string, err error) {
 	s := bufio.NewScanner(io.LimitReader(r, credentialInputLimit+1))
 	s.Buffer(make([]byte, 256), credentialInputLimit+1)
@@ -168,6 +210,9 @@ func credentialRequest(r io.Reader) (host, path string, err error) {
 		return 0, nil, nil
 	})
 	seen := make(map[string]bool, 3)
+	capabilities := make(map[string]bool, 2)
+	coreStarted := false
+	wwwAuthCount := 0
 	total := 0
 	for s.Scan() {
 		line := s.Text()
@@ -182,19 +227,40 @@ func credentialRequest(r io.Reader) (host, path string, err error) {
 			return "", "", ErrCredentialDenied
 		}
 		key, value, ok := strings.Cut(line, "=")
-		if !ok || seen[key] || !credentialValue(value, 256) {
+		if !ok || key == "" {
 			return "", "", ErrCredentialDenied
 		}
-		seen[key] = true
 		switch key {
 		case "protocol":
-			if value != "https" {
+			if seen[key] || !credentialValue(value, 256) || value != "https" {
 				return "", "", ErrCredentialDenied
 			}
+			coreStarted = true
+			seen[key] = true
 		case "host":
+			if seen[key] || !credentialValue(value, 256) {
+				return "", "", ErrCredentialDenied
+			}
+			coreStarted = true
+			seen[key] = true
 			host = value
 		case "path":
+			if seen[key] || !credentialValue(value, 256) {
+				return "", "", ErrCredentialDenied
+			}
+			coreStarted = true
+			seen[key] = true
 			path = value
+		case "capability[]":
+			if coreStarted || (value != "authtype" && value != "state") || capabilities[value] {
+				return "", "", ErrCredentialDenied
+			}
+			capabilities[value] = true
+		case "wwwauth[]":
+			wwwAuthCount++
+			if wwwAuthCount > 16 || !credentialMetadataValue(value, 1024) {
+				return "", "", ErrCredentialDenied
+			}
 		default:
 			return "", "", ErrCredentialDenied
 		}
@@ -207,8 +273,28 @@ func credentialRequest(r io.Reader) (host, path string, err error) {
 	return "", "", ErrCredentialDenied
 }
 
+func credentialMetadataValue(value string, limit int) bool {
+	if value == "" || len(value) > limit {
+		return false
+	}
+	for _, c := range []byte(value) {
+		if c < 32 || c > 126 {
+			return false
+		}
+	}
+	return true
+}
+
 func credentialRequestScope(seen map[string]bool, host, path string) bool {
-	return len(seen) == 3 && seen["protocol"] && host == "github.com" && strings.HasSuffix(path, ".git") && credentialRepository(strings.TrimSuffix(path, ".git"))
+	return len(seen) == 3 && seen["protocol"] && seen["host"] && seen["path"] && (host == "github.com" || validLoopbackAuthority(host)) && strings.HasSuffix(strings.ToLower(path), ".git") && credentialRepository(strings.ToLower(strings.TrimSuffix(path, ".git")))
+}
+
+func validLoopbackAuthority(authority string) bool {
+	if authority == "" || strings.ContainsAny(authority, "\\/@?#\x00\r\n") {
+		return false
+	}
+	u, err := url.Parse("https://" + authority)
+	return err == nil && u.Host == authority && u.User == nil && u.Path == "" && u.RawQuery == "" && u.Fragment == "" && isLoopbackHost(u.Hostname())
 }
 
 // HelperMain handles only the private mode. args excludes argv[0]. Errors are

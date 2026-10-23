@@ -1,6 +1,6 @@
 # Backup format and restore protocol
 
-**Status: version-one implementation contract; not implemented yet.** [RECOVERY-SEMANTICS.md](RECOVERY-SEMANTICS.md) defines effect/commit behavior and [CONFIGURATION.md](CONFIGURATION.md) defines finite resource limits. Qualify representation and Git capabilities with temporary repositories before shipping compatible artifacts.
+**Status: version-one implementation contract; implemented and tested for the documented Linux/amd64 scope.** I03/I08 tests use temporary repositories and synthetic HTTPS acquisition. Broader platform, filesystem/crash, and release qualification remain pending. [RECOVERY-SEMANTICS.md](RECOVERY-SEMANTICS.md) defines effect/commit behavior and [CONFIGURATION.md](CONFIGURATION.md) defines finite resource limits. Qualify representation and Git capabilities before shipping compatible artifacts.
 
 ## Layout
 
@@ -17,7 +17,7 @@ Use generated IDs that are safe path components. Do not construct paths directly
 
 ## Bundle creation
 
-Illustrative commands below describe Git operations, not implemented GitVault commands. All real invocations must use separate arguments, a controlled environment, timeouts, and credential isolation.
+Illustrative commands below describe Git operations, not copyable GitVault commands. Implemented Git invocations use separate arguments, a controlled environment, timeouts, and credential isolation.
 
 ```sh
 git clone --mirror https://github.com/OWNER/REPO.git MIRROR.git

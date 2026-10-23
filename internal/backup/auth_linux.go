@@ -30,6 +30,7 @@ type linuxCredentialBroker struct {
 	conns    map[*net.UnixConn]struct{}
 	group    int
 	start    string
+	host     string
 	repo     string
 	username string
 	secret   []byte
@@ -57,7 +58,7 @@ func newCredentialBrokerPlatform(o CredentialBrokerOptions) (credentialBrokerPla
 	}
 	exe, _ := os.Stat(o.Executable)
 	ctx, cancel := context.WithCancel(o.Context)
-	b := &linuxCredentialBroker{listener: l, dir: dir, socket: socket, ctx: ctx, cancel: cancel, done: make(chan struct{}), conns: make(map[*net.UnixConn]struct{}), repo: o.AllowedRepository + ".git", username: o.Username, secret: append([]byte(nil), o.Secret...), exe: exe}
+	b := &linuxCredentialBroker{listener: l, dir: dir, socket: socket, ctx: ctx, cancel: cancel, done: make(chan struct{}), conns: make(map[*net.UnixConn]struct{}), host: o.AllowedHost, repo: o.AllowedRepository + ".git", username: o.Username, secret: append([]byte(nil), o.Secret...), exe: exe}
 	b.wg.Add(1)
 	go b.serve()
 	go func() { <-ctx.Done(); _ = b.close() }()
@@ -180,7 +181,7 @@ func (b *linuxCredentialBroker) handle(c *net.UnixConn) {
 		return
 	}
 	host, path, err := credentialRequest(c)
-	if err != nil || host != "github.com" || path != b.repo {
+	if err != nil || host != b.host || !strings.EqualFold(path, b.repo) {
 		return
 	}
 	// Serialize final authorization and output with revocation/zeroing. Deadline

@@ -28,7 +28,7 @@ Read [the runbook](../AGENT-RUNBOOK.md), [MODULES](../MODULES.md), [RECOVERY-SEM
 | I05 | Typed revisions and responsive native local workflow | I04 | DONE (Linux/amd64 implementation scope; broader qualification pending) |
 | I06 | MyGo-native secrets and PAT broker onboarding | I05, I02 | DONE (Linux/amd64 implementation scope; native locked/pending-prompt and other platforms pending) |
 | I07 | GitHub REST pagination and explicit stable selection | I06, I05 | DONE (Linux/amd64 implementation scope; provider/native UI qualification pending) |
-| I08 | Selected GitHub-to-local snapshot pipeline | I07, I03, I04, I05, I06 | TODO |
+| I08 | Selected GitHub-to-local snapshot pipeline | I07, I03, I04, I05, I06 | DONE (Linux/amd64 scope) |
 | I09 | History, import and offline restore UI | I03, I04, I05 | TODO |
 | I10 | Optional S3/R2 copy of ready artifacts | I08, I06, I09 | TODO |
 | I11 | Remote retrieval through the same restore path | I10, I09 | TODO |
@@ -173,7 +173,7 @@ Dependency availability is not edit-disjointness: I09/I14 can be logically avail
 
 ## I08 — Selected GitHub-to-local snapshot pipeline
 
-**Purpose:** real selected remote acquisition through verified local recovery. **Dependencies:** I07, I03, I04, I05, I06. **Status:** TODO.
+**Purpose:** real selected remote acquisition through verified local recovery. **Dependencies:** I07, I03, I04, I05, I06. **Status:** DONE for the documented Linux/amd64 implementation scope after five named tests, all global gates, and two independent GPT-6 Luna review rounds. No live GitHub request or real credential was used. Non-Linux, broader filesystem/crash behavior, native locked/pending-prompt behavior, live provider behavior, and release readiness remain unqualified. Baseline/checklist: `/tmp/opencode/gitvault-i08-evidence/I08-start.json` and `I08-checklist.md`; final results and review: `/tmp/opencode/gitvault-i08-evidence/I08-results.md`, `I08-review-round-1.md`, and `round-2/`.
 
 **Allowed:** `internal/{app,github,store,desktop}/**`, `internal/backup/{acquire*,git*}.go`, `main.go`, `docs/{BACKUP-FORMAT,SECURITY}.md`, common status paths.
 
@@ -187,7 +187,7 @@ Dependency availability is not edit-disjointness: I09/I14 can be logically avail
 
 **Tests/gates:** `selected_pipeline`: `TestSelectedGitHubSnapshotPipeline`, `TestPipelinePartialResults`, `TestPipelineCancellationAndRestart`, `TestPipelineSelectionAndCredentialRevision`; `native_selected_start`: `TestSelectedBackupControls`. Commands `go test ./internal/app -count=1`, `go test ./internal/desktop -count=1`, exact gates and G; five named passes. Use real installed Git against synthetic HTTPS smart-Git plus fake GitHub metadata; remove source and prove offline exact-ref/HEAD restore. A fake engine-only pass is insufficient. Test-origin injection must not relax production host policy.
 
-**Failure/cancel/restart:** unrelated successes survive auth/network failure; child reaping precedes release; uncertain publication reconciles same ID, retry only eligible stage. **Stop:** IDs/URL mismatch, mock-only transfer evidence, lost publication identity or still-unwired native control. **Platform evidence:** real Git fixture and native smoke by claimed OS; optional live access only after human opt-in.
+**Failure/cancel/restart:** unrelated successes survive auth/network failure; child reaping precedes release; uncertain publication reconciles same ID, retry only eligible stage. **Stop:** IDs/URL mismatch, mock-only transfer evidence, lost publication identity or still-unwired native control. **Platform evidence:** real Git fixture; MyGo UI test drives selected Start/Cancel through the real coordinator and verifies Retry command routing, with retry execution covered by the app pipeline test. Linux/amd64 only; broader native, filesystem, and provider qualification is not implied. Optional live access requires human opt-in.
 
 ## I09 — History, import and offline restore UI
 

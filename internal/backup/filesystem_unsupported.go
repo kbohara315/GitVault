@@ -68,6 +68,9 @@ func validateDirectoryTrust(string) error {
 func (e *Engine) lock(ctx context.Context, exclusive bool) (func(), error) {
 	return nil, errors.New("root locking is not qualified on this platform")
 }
+func lockGitHubMirror(context.Context, string, string) (func(), error) {
+	return nil, errors.New("mirror locking is not qualified on this platform")
+}
 func (e *Engine) authorizeManagedMutation() error {
 	return errors.New("managed mutation is not qualified on this platform")
 }

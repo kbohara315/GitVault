@@ -265,7 +265,7 @@ func (a *App) repositories(c *ui.Context, s app.ViewState) {
 		}
 	}
 	ui.Text(c, "Repository selection is explicit and saved by stable GitHub ID. Newly discovered repositories stay unselected; discovery filters do not change saved selection.").Wrap()
-	ui.Text(c, "Local backups use a filesystem path and do not require a GitHub account or selection. Remote backup is not available in this build.").Wrap()
+	ui.Text(c, "Selected GitHub backups refresh the saved account inventory before using current repository URLs. Local backups remain independent of GitHub.").Wrap()
 	if len(s.Repositories) == 0 {
 		ui.Text(c, "No repositories match the current display filters, or no inventory is saved.").TextColor(c.Theme().TextMuted).Wrap()
 		return
@@ -382,6 +382,10 @@ func (a *App) backups(c *ui.Context, s app.ViewState) {
 		a.send(app.Command{Kind: app.BackupLocal, Source: a.source})
 	}
 	ui.Text(c, "A second backup request is rejected while one is active; it is not queued.").Wrap()
+	ui.Text(c, fmt.Sprintf("Explicitly selected GitHub repositories: %d", s.SelectedRepositoryCount))
+	if ui.PrimaryButton(c, "Back up selected GitHub repositories").Disabled(s.Busy || !s.CanStartSelected || s.SelectedRepositoryCount == 0).Clicked() {
+		a.send(app.Command{Kind: app.BackupSelected, ExpectedRevision: s.Revision})
+	}
 
 	ui.Text(c, "Local snapshots").Bold()
 	if len(s.Snapshots) == 0 {
@@ -408,6 +412,16 @@ func (a *App) backups(c *ui.Context, s app.ViewState) {
 			detail += " · " + snap.Path
 		}
 		ui.Text(c, detail).TextColor(c.Theme().TextMuted).Wrap()
+	}
+	for _, task := range s.Tasks {
+		label := task.Repository
+		if label == "" {
+			label = "repository task"
+		}
+		ui.Text(c, label+" · "+task.Stage+" · "+task.Detail).Wrap()
+		if task.CanRetry && ui.Button(c, "Retry "+label).Disabled(s.Busy).Clicked() {
+			a.send(app.Command{Kind: app.RetryGitHubTask, ExpectedRevision: s.Revision, RepositoryID: task.RepositoryID, RunID: task.RunID})
+		}
 	}
 	ui.Text(c, "Snapshot inspection, import, upload, and restore are not available in this build.").Wrap()
 }
@@ -438,7 +452,7 @@ func (a *App) preferences(c *ui.Context, s app.ViewState) {
 	ui.Text(c, "This save changes non-root local settings only. Use Bind backup folder to change the managed folder explicitly.").Wrap()
 
 	ui.Text(c, "Unavailable in this build").Bold()
-	ui.Text(c, "GitHub discovery and explicit selection are available on the Repositories page. GitHub backups, cloud copies, schedules, retention preview or deletion, and restore are not implemented yet.").Wrap()
+	ui.Text(c, "GitHub discovery, explicit selection, and selected local snapshots are available on the Repositories page and Backups page. Cloud copies, schedules, retention preview or deletion, and restore are not available in this build.").Wrap()
 }
 
 func short(id string) string {

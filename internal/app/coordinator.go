@@ -31,6 +31,11 @@ type SnapshotEngine interface {
 // the revision and before any source or backup-root mutation begins.
 type SnapshotEngineFactory func(config.Revision) (SnapshotEngine, error)
 
+// GitHubRunExecutor owns fresh metadata lookup and remote acquisition. It must
+// finish all child workers before returning and call complete once per task;
+// completed facts are persisted immediately, independent of later repositories.
+type GitHubRunExecutor func(context.Context, store.Run, SnapshotEngine, []store.Task, func(store.Task, string) error, func(store.Task, backup.Result, error) error) error
+
 type Coordinator struct {
 	store   *store.Store
 	root    store.RootBinding
@@ -52,12 +57,19 @@ type activeRun struct {
 	task         store.Task
 	engine       SnapshotEngine
 	request      LocalBackupRequest
+	tasks        []store.Task
 	cancel       context.CancelFunc
 	releaseRun   func()
 	done         chan struct{}
 	terminalErr  error
 	cancelAsked  bool
 	terminalDone bool
+}
+
+type GitHubBackupRequest struct {
+	ID, Trigger, AccountID string
+	ExpectedRevision       int64
+	RepositoryIDs          []string
 }
 
 // NewCoordinatorWithFactory constructs a startup inspection engine from the
@@ -279,6 +291,167 @@ func (c *Coordinator) StartLocal(ctx context.Context, request LocalBackupRequest
 	return run, nil
 }
 
+// StartGitHub durably captures the selected stable IDs and reserves every task
+// and snapshot identity before any credential prompt, REST request, or Git call.
+func (c *Coordinator) StartGitHub(ctx context.Context, request GitHubBackupRequest, execute GitHubRunExecutor) (store.Run, error) {
+	if ctx == nil || execute == nil || request.ExpectedRevision < 1 || !storeGitHubAccountID(request.AccountID) || len(request.RepositoryIDs) == 0 || len(request.RepositoryIDs) > 10000 {
+		return store.Run{}, errors.New("valid selected GitHub repositories and executor are required")
+	}
+	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		return store.Run{}, ErrCoordinatorClosed
+	}
+	if c.starting || c.active != nil || c.reconciling {
+		c.mu.Unlock()
+		return store.Run{}, &store.BusyError{}
+	}
+	if !c.ready {
+		c.mu.Unlock()
+		return store.Run{}, ErrStartupReconciliationRequired
+	}
+	c.starting = true
+	c.mu.Unlock()
+	started := false
+	defer func() {
+		if !started {
+			c.mu.Lock()
+			c.starting = false
+			c.mu.Unlock()
+		}
+	}()
+
+	if request.Trigger == "" {
+		request.Trigger = "manual"
+	}
+	if request.Trigger != "manual" && request.Trigger != "retry" {
+		return store.Run{}, errors.New("invalid GitHub run trigger")
+	}
+	seen := make(map[string]bool, len(request.RepositoryIDs))
+	for _, id := range request.RepositoryIDs {
+		if !stableRepositoryID(id) || seen[id] {
+			return store.Run{}, errors.New("invalid or duplicate selected GitHub repository ID")
+		}
+		seen[id] = true
+	}
+	if request.ID == "" {
+		id, err := backup.NewID()
+		if err != nil {
+			return store.Run{}, err
+		}
+		request.ID = id
+	}
+	reservations := make([]store.Task, 0, len(request.RepositoryIDs))
+	for range request.RepositoryIDs {
+		taskID, err := backup.NewID()
+		if err != nil {
+			return store.Run{}, err
+		}
+		snapshotID, err := backup.NewID()
+		if err != nil {
+			return store.Run{}, err
+		}
+		reservations = append(reservations, store.Task{ID: taskID, RunID: request.ID, Provider: "github", OperationID: snapshotID, Stage: "pending", Outcome: "pending", Attempt: 1, PublicationState: string(backup.NotPublished), CloudOutcome: "not_requested"})
+	}
+
+	releaseRun, err := lockCoordinatorRun(ctx, c.root.Path)
+	if err != nil {
+		return store.Run{}, err
+	}
+	releaseRoot, err := lockManagedRoot(ctx, c.root.Path)
+	if err != nil {
+		releaseRun()
+		return store.Run{}, err
+	}
+	canonical, fsID, err := canonicalManagedRoot(c.root.Path)
+	if err == nil {
+		var marker managedRootMarker
+		marker, err = readManagedRootMarker(filepath.Join(canonical, managedRootMarkerName))
+		if err == nil {
+			var checked store.RootBinding
+			checked, err = validateManagedRootLocked(ctx, c.store, canonical, fsID, marker)
+			if err == nil && checked != c.root {
+				err = store.ErrForeignRoot
+			}
+		}
+	}
+	if err != nil {
+		releaseRoot()
+		releaseRun()
+		return store.Run{}, err
+	}
+
+	run, tasks, err := c.store.BeginGitHubRun(ctx, store.RunIntent{ID: request.ID, Trigger: request.Trigger, Kind: "github_backup", RootID: c.root.ID, AccountID: request.AccountID, RepositoryIDs: append([]string(nil), request.RepositoryIDs...)}, request.ExpectedRevision, reservations)
+	if err != nil {
+		releaseRoot()
+		releaseRun()
+		return store.Run{}, err
+	}
+	engine := c.engine
+	if c.factory != nil {
+		engine, err = c.factory(run.Config)
+		if err != nil {
+			releaseRoot()
+			c.failGitHubAdmission(run.ID, tasks, releaseRun, err)
+			return store.Run{}, err
+		}
+	}
+	if err = c.store.SetRunState(ctx, run.ID, "running", ""); err != nil {
+		releaseRoot()
+		c.failGitHubAdmission(run.ID, tasks, releaseRun, err)
+		return store.Run{}, err
+	}
+	releaseRoot()
+	run.State = "running"
+	jobCtx, cancel := context.WithCancel(c.ctx)
+	job := &activeRun{run: run, tasks: tasks, engine: engine, cancel: cancel, releaseRun: releaseRun, done: make(chan struct{})}
+	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		cancel()
+		c.failGitHubAdmission(run.ID, tasks, releaseRun, ErrCoordinatorClosed)
+		return store.Run{}, ErrCoordinatorClosed
+	}
+	c.active = job
+	c.starting = false
+	c.mu.Unlock()
+	started = true
+	go c.executeGitHub(jobCtx, job, execute)
+	return run, nil
+}
+
+func storeGitHubAccountID(value string) bool {
+	if value == "" || len(value) > 32 || value[0] == '0' {
+		return false
+	}
+	for _, c := range value {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func (c *Coordinator) failGitHubAdmission(runID string, tasks []store.Task, release func(), cause error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var persistErr error
+	for _, task := range tasks {
+		persistErr = errors.Join(persistErr, c.store.UpdateTask(ctx, task.ID, store.TaskUpdate{Stage: "failed", Outcome: "failed", Attempt: task.Attempt, PublicationState: string(backup.NotPublished), CloudOutcome: "not_requested", ErrorCode: "admission_failed"}))
+	}
+	persistErr = errors.Join(persistErr, c.store.FinishRun(ctx, runID, "failed", "admission_failed"))
+	if persistErr == nil {
+		release()
+		return
+	}
+	job := &activeRun{run: store.Run{ID: runID}, tasks: tasks, releaseRun: release, done: make(chan struct{}), terminalErr: errors.Join(cause, persistErr), terminalDone: true}
+	close(job.done)
+	c.mu.Lock()
+	c.active = job
+	c.starting = false
+	c.mu.Unlock()
+}
+
 func (c *Coordinator) failAdmission(runID string, release func(), cause error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -334,6 +507,158 @@ func (c *Coordinator) execute(ctx context.Context, job *activeRun) {
 	close(job.done)
 }
 
+func (c *Coordinator) executeGitHub(ctx context.Context, job *activeRun, execute GitHubRunExecutor) {
+	type taskRuntime struct {
+		task      store.Task
+		stage     string
+		completed bool
+	}
+	runtimes := make(map[string]*taskRuntime, len(job.tasks))
+	for _, task := range job.tasks {
+		runtimes[task.ID] = &taskRuntime{task: task, stage: task.Stage}
+	}
+	var runtimeMu sync.Mutex
+	var persistenceErr error
+	setStage := func(task store.Task, stage string) error {
+		runtimeMu.Lock()
+		defer runtimeMu.Unlock()
+		runtime := runtimes[task.ID]
+		if runtime == nil || runtime.completed {
+			return store.ErrInvalidTransition
+		}
+		update := store.TaskUpdate{Stage: stage, Outcome: "pending", Attempt: runtime.task.Attempt, PublicationState: string(backup.NotPublished), CloudOutcome: "not_requested"}
+		if err := c.advanceTaskTo(ctx, runtime.task, update, runtime.stage, stage, "pending"); err != nil {
+			return err
+		}
+		runtime.stage = stage
+		runtime.task.Stage = stage
+		return nil
+	}
+	complete := func(task store.Task, result backup.Result, engineErr error) error {
+		runtimeMu.Lock()
+		runtime := runtimes[task.ID]
+		if runtime == nil || runtime.completed {
+			runtimeMu.Unlock()
+			return store.ErrInvalidTransition
+		}
+		runtime.completed = true
+		captured := runtime.task
+		runtimeMu.Unlock()
+		perTask := *job
+		perTask.task = captured
+		_, _, err := c.persistTaskResult(context.Background(), &perTask, result, engineErr)
+		if err != nil {
+			runtimeMu.Lock()
+			persistenceErr = errors.Join(persistenceErr, err)
+			runtimeMu.Unlock()
+			job.cancel()
+			return err
+		}
+		return nil
+	}
+
+	executeErr := execute(ctx, job.run, job.engine, append([]store.Task(nil), job.tasks...), setStage, complete)
+	for _, task := range job.tasks {
+		runtimeMu.Lock()
+		runtime := runtimes[task.ID]
+		missing := runtime != nil && !runtime.completed
+		captured := task
+		if runtime != nil {
+			captured = runtime.task
+		}
+		runtimeMu.Unlock()
+		if !missing {
+			continue
+		}
+		cause := executeErr
+		if cause == nil {
+			cause = errors.New("repository task did not produce a result")
+		}
+		outcome := backup.OutcomeFailed
+		if errors.Is(cause, context.Canceled) {
+			outcome = backup.OutcomeCancelled
+		}
+		result, _ := backup.NewResult(backup.ResultFacts{Outcome: outcome, Publication: backup.NotPublished})
+		if err := complete(captured, result, cause); err != nil {
+			executeErr = errors.Join(executeErr, err)
+		}
+	}
+
+	runtimeMu.Lock()
+	persistErr := persistenceErr
+	runtimeMu.Unlock()
+	if persistErr != nil {
+		c.mu.Lock()
+		job.terminalErr = fmt.Errorf("persist GitHub task facts: %w", persistErr)
+		job.terminalDone = true
+		close(job.done)
+		c.mu.Unlock()
+		return // keep managed-root ownership for startup reconciliation.
+	}
+
+	persistCtx, cancelPersist := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancelPersist()
+	tasks, err := c.store.ListTasks(persistCtx, job.run.ID, 10000)
+	if err != nil || len(tasks) != len(job.tasks) {
+		if err == nil {
+			err = errors.New("GitHub task inventory is incomplete")
+		}
+		c.mu.Lock()
+		job.terminalErr = err
+		job.terminalDone = true
+		close(job.done)
+		c.mu.Unlock()
+		return
+	}
+	succeeded, failed, cancelled, interrupted := 0, 0, 0, 0
+	for _, task := range tasks {
+		switch task.Outcome {
+		case "succeeded":
+			succeeded++
+		case "cancelled":
+			cancelled++
+		case "interrupted":
+			interrupted++
+		default:
+			failed++
+		}
+	}
+	c.mu.Lock()
+	cancelAsked := job.cancelAsked
+	if cancelAsked {
+		err = c.store.FinishRun(persistCtx, job.run.ID, "cancelled", "cancelled")
+	} else {
+		outcome, code := "failed", "task_failures"
+		switch {
+		case succeeded == len(tasks):
+			outcome, code = "succeeded", ""
+		case succeeded > 0:
+			outcome, code = "partial", "partial_results"
+		case interrupted == len(tasks):
+			outcome, code = "interrupted", "owner_lost"
+		case cancelled == len(tasks):
+			outcome, code = "cancelled", "cancelled"
+		case failed == 0 && interrupted > 0:
+			outcome, code = "interrupted", "owner_lost"
+		}
+		err = c.store.FinishRun(persistCtx, job.run.ID, outcome, code)
+	}
+	if err != nil {
+		job.terminalErr = fmt.Errorf("persist terminal GitHub run facts: %w", err)
+		job.terminalDone = true
+		close(job.done)
+		c.mu.Unlock()
+		return
+	}
+	job.terminalDone = true
+	job.releaseRun()
+	if c.active == job {
+		c.active = nil
+	}
+	close(job.done)
+	c.mu.Unlock()
+}
+
 func (c *Coordinator) persistTaskResult(ctx context.Context, job *activeRun, result backup.Result, engineErr error) (string, string, error) {
 	taskOutcome, errorCode := outcomeForResult(result, engineErr)
 	artifact := result.Artifact()
@@ -344,14 +669,15 @@ func (c *Coordinator) persistTaskResult(ctx context.Context, job *activeRun, res
 
 	if artifact != (backup.ArtifactIdentity{}) {
 		expectedID := job.task.OperationID
-		expectedPath := filepath.Join(c.root.Path, "snapshots", "local", job.request.RepositoryID, expectedID)
-		if artifact.SnapshotID != expectedID || artifact.Provider != "local" || artifact.RepositoryID != job.request.RepositoryID || filepath.Clean(artifact.Path) != expectedPath {
+		provider, repositoryID := job.task.Provider, job.task.RepositoryID
+		expectedPath := filepath.Join(c.root.Path, "snapshots", provider, repositoryID, expectedID)
+		if artifact.SnapshotID != expectedID || artifact.Provider != provider || artifact.RepositoryID != repositoryID || filepath.Clean(artifact.Path) != expectedPath {
 			taskOutcome, errorCode = "failed", "artifact_identity_conflict"
 			publication = string(backup.PublicationUnknown)
 		} else {
 			manifest, inspectErr := job.engine.Inspect(ctx, expectedPath)
 			verification, verifyErr := job.engine.Verify(ctx, expectedPath)
-			if inspectErr != nil || verifyErr != nil || manifest.SnapshotID != expectedID || manifest.Repository.ID != job.request.RepositoryID || manifest.Repository.Provider != "local" {
+			if inspectErr != nil || verifyErr != nil || manifest.SnapshotID != expectedID || manifest.Repository.ID != repositoryID || manifest.Repository.Provider != provider {
 				taskOutcome, errorCode = "failed", "artifact_verification_failed"
 				publication = string(backup.PublicationUnknown)
 			} else {
@@ -393,9 +719,11 @@ func (c *Coordinator) persistTaskResult(ctx context.Context, job *activeRun, res
 		taskOutcome, errorCode = "failed", "artifact_missing"
 	}
 	if taskOutcome == "empty_repository" {
-		update.Stage, update.Outcome, update.ErrorCode = "pending", "empty_repository", errorCode
+		update.Stage, update.Outcome, update.ErrorCode = job.task.Stage, "empty_repository", errorCode
 	} else if taskOutcome == "cancelled" || taskOutcome == "interrupted" {
-		update.Stage, update.Outcome, update.ErrorCode = "pending", taskOutcome, errorCode
+		// A terminal outcome does not rewind the durable stage. For example,
+		// cancellation during HTTPS acquisition remains at fetching.
+		update.Stage, update.Outcome, update.ErrorCode = job.task.Stage, taskOutcome, errorCode
 	} else {
 		update.Stage, update.Outcome, update.ErrorCode = "failed", "failed", errorCode
 	}

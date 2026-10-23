@@ -2,11 +2,21 @@ package desktop
 
 import (
 	"bytes"
+	"context"
+	"errors"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"gitvault/internal/app"
 	"gitvault/internal/config"
+	"gitvault/internal/github"
+	"gitvault/internal/secrets"
+	"gitvault/internal/store"
 
 	"github.com/egoist/mygo/ui"
 )
@@ -223,6 +233,172 @@ func TestNativeGitHubDiscoveryFiltersAndExplicitSelection(t *testing.T) {
 	if b.commands[2].Kind != app.SelectRepository || b.commands[2].ExpectedRevision != 41 || b.commands[2].RepositoryID != "github:201" || !b.commands[2].Selected {
 		t.Fatalf("selection did not use the stable explicit ID: %+v", b.commands[2])
 	}
+}
+
+func TestSelectedBackupControls(t *testing.T) {
+	b := &testBackend{state: app.ViewState{
+		Connected: true, Revision: 52, CanStartSelected: true, SelectedRepositoryCount: 2,
+		Tasks: []app.TaskView{{Repository: "alice/demo", RepositoryID: "github:201", RunID: "run-synthetic-1", CanRetry: true}},
+	}}
+	a := NewWithBackend(b)
+	tt := ui.NewTester(a.View, 1000, 1000)
+	if err := tt.Click("Backups"); err != nil {
+		t.Fatal(err)
+	}
+	if !tt.HasText("Explicitly selected GitHub repositories: 2") {
+		t.Fatalf("selected repository count is not visible: %v", tt.Texts())
+	}
+	if err := tt.Click("Back up selected GitHub repositories"); err != nil {
+		t.Fatal(err)
+	}
+	if len(b.commands) != 1 || b.commands[0].Kind != app.BackupSelected || b.commands[0].ExpectedRevision != 52 {
+		t.Fatalf("selected backup did not submit its captured selection revision: %+v", b.commands)
+	}
+	if err := tt.Click("Retry alice/demo"); err != nil {
+		t.Fatal(err)
+	}
+	if len(b.commands) != 2 {
+		t.Fatalf("retry command missing: %+v", b.commands)
+	}
+	retry := b.commands[1]
+	if retry.Kind != app.RetryGitHubTask || retry.ExpectedRevision != 52 || retry.RepositoryID != "github:201" || retry.RunID != "run-synthetic-1" {
+		t.Fatalf("retry did not preserve the durable task identity: %+v", retry)
+	}
+
+	b.state.Busy = true
+	tt.Frame()
+	if err := tt.Click("Back up selected GitHub repositories"); err != nil {
+		t.Fatal(err)
+	}
+	if err := tt.Click("Retry alice/demo"); err != nil {
+		t.Fatal(err)
+	}
+	if len(b.commands) != 2 {
+		t.Fatalf("busy controls admitted additional selected work: %+v", b.commands)
+	}
+
+	empty := &testBackend{state: app.ViewState{Connected: true, Revision: 53, SelectedRepositoryCount: 0}}
+	emptyTester := ui.NewTester(NewWithBackend(empty).View, 1000, 1000)
+	if err := emptyTester.Click("Backups"); err != nil {
+		t.Fatal(err)
+	}
+	if err := emptyTester.Click("Back up selected GitHub repositories"); err != nil {
+		t.Fatal(err)
+	}
+	if len(empty.commands) != 0 {
+		t.Fatalf("empty selection submitted a GitHub backup: %+v", empty.commands)
+	}
+	testSelectedBackupCoordinatorAdmission(t)
+}
+
+func testSelectedBackupCoordinatorAdmission(t *testing.T) {
+	t.Helper()
+	s, base := workflowStore(t)
+	root := filepath.Join(base, "selected-vault")
+	if err := os.Mkdir(root, 0700); err != nil {
+		t.Fatal(err)
+	}
+	credentials := &controlCredentialStore{entered: make(chan struct{})}
+	discovery := func(config.Revision) (app.GitHubDiscoverer, error) { return controlDiscovery{}, nil }
+	w, err := app.NewLocalWorkflowWithDiscovery(context.Background(), s, localEngineBuilder(s), credentials, discovery)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if closeErr := w.Close(ctx); closeErr != nil {
+			t.Errorf("close coordinator-backed selected workflow: %v", closeErr)
+		}
+	})
+	initial := w.Snapshot()
+	submitWorkflow(t, w, app.Command{Kind: app.BindRoot, ExpectedRevision: initial.Revision, Root: root})
+	bound := waitWorkflow(t, w, func(state app.ViewState) bool {
+		return state.CanStartLocal && state.Settings.Root == root
+	})
+	current, err := s.CurrentConfig(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	values := current.Config()
+	values.GitHub.Credential = &config.Credential{Reference: "synthetic-desktop-selection", Generation: 1}
+	values.Selection.RepositoryIDs = []string{"github:201"}
+	revision, err := s.SaveConfig(context.Background(), current.ID(), values)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = s.ReconcileGitHubInventory(context.Background(), store.GitHubAccount{ID: "101", Login: "alice", Type: "User"}, []store.GitHubRepository{{
+		ID: "201", OwnerID: "101", OwnerLogin: "alice", OwnerType: "User", Name: "demo", FullName: "alice/demo",
+		CloneURL: "https://github.com/alice/demo.git", Private: true, Available: true,
+	}}, true); err != nil {
+		t.Fatal(err)
+	}
+	submitWorkflow(t, w, app.Command{Kind: app.Refresh, ExpectedRevision: revision.ID()})
+	ready := waitWorkflow(t, w, func(state app.ViewState) bool {
+		return state.CanStartSelected && state.SelectedRepositoryCount == 1 && state.Revision == revision.ID()
+	})
+	if ready.Revision <= bound.Revision {
+		t.Fatal("selected configuration revision was not loaded by the native workflow")
+	}
+
+	backend := &localWorkflowBackend{LocalWorkflow: w}
+	tester := ui.NewTester(NewWithBackend(backend).View, 1000, 1000)
+	if err = tester.Click("Backups"); err != nil {
+		t.Fatal(err)
+	}
+	if err = tester.Click("Back up selected GitHub repositories"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-credentials.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("selected backup did not reach coordinator credential acquisition")
+	}
+	runs, err := s.QueryRuns(context.Background(), 10)
+	if err != nil || len(runs) != 1 || runs[0].State != "running" || runs[0].Trigger != "manual" || runs[0].Intent.AccountID != "101" || len(runs[0].Intent.RepositoryIDs) != 1 || runs[0].Intent.RepositoryIDs[0] != "github:201" {
+		t.Fatalf("native selected command did not durably reach the coordinator: runs=%+v err=%v", runs, err)
+	}
+	tasks, err := s.ListTasks(context.Background(), runs[0].ID, 10)
+	if err != nil || len(tasks) != 1 || tasks[0].RepositoryID != "201" || tasks[0].OperationID == "" {
+		t.Fatalf("coordinator did not reserve the selected stable repository identity: tasks=%+v err=%v", tasks, err)
+	}
+	waitWorkflow(t, w, func(state app.ViewState) bool { return state.Busy && state.CanCancel })
+	tester.Frame()
+	if err = tester.Click("Cancel operation"); err != nil {
+		t.Fatal(err)
+	}
+	waitWorkflow(t, w, func(state app.ViewState) bool { return !state.Busy && strings.Contains(state.Status, "cancelled") })
+	terminal, err := s.GetRun(context.Background(), runs[0].ID)
+	terminalTasks, tasksErr := s.ListTasks(context.Background(), runs[0].ID, 10)
+	if err != nil || terminal.State != "cancelled" || tasksErr != nil || len(terminalTasks) != 1 || terminalTasks[0].Outcome != "cancelled" {
+		t.Fatalf("native cancellation did not reach durable coordinator terminal state: run=%+v tasks=%+v err=%v tasksErr=%v", terminal, terminalTasks, err, tasksErr)
+	}
+}
+
+type localWorkflowBackend struct{ *app.LocalWorkflow }
+
+type controlCredentialStore struct {
+	entered chan struct{}
+	once    sync.Once
+	pending atomic.Bool
+}
+
+func (*controlCredentialStore) Store(context.Context, secrets.Handle, []byte) error { return nil }
+func (c *controlCredentialStore) ReadInteractive(ctx context.Context, _ secrets.Handle) ([]byte, error) {
+	c.pending.Store(true)
+	c.once.Do(func() { close(c.entered) })
+	defer c.pending.Store(false)
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+func (*controlCredentialStore) Delete(context.Context, secrets.Handle) error { return nil }
+func (*controlCredentialStore) CloseLeases()                                 {}
+func (c *controlCredentialStore) Pending() bool                              { return c.pending.Load() }
+
+type controlDiscovery struct{}
+
+func (controlDiscovery) DiscoverBytes(context.Context, []byte) (github.Result, error) {
+	return github.Result{}, errors.New("discovery must not start before this control test cancels")
 }
 
 func TestSecretInputClientOnlyExposesMask(t *testing.T) {

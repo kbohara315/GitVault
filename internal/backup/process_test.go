@@ -22,7 +22,56 @@ func helperProcess(t *testing.T, ctx context.Context, o GitRunnerOptions, mode, 
 	if err != nil {
 		t.Fatal(err)
 	}
-	return runOwnedProcess(ctx, executable, []string{"-test.run=^TestGitProcessHelper$", "--", "gitvault-helper", mode, root}, []string{"LANG=C"}, root, nil, o)
+	return runOwnedProcess(ctx, executable, []string{"-test.run=^TestGitProcessHelper$", "--", "gitvault-helper", mode, root}, []string{"LANG=C"}, root, nil, o, nil)
+}
+
+func TestGitProcessStartupBarrier(t *testing.T) {
+	root := t.TempDir()
+	options := DefaultGitRunnerOptions()
+	options.CommandTimeout = 5 * time.Second
+	ctx, cancel := context.WithTimeout(context.Background(), options.CommandTimeout)
+	defer cancel()
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal("test executable unavailable")
+	}
+	var observedPID int
+	_, err = runOwnedProcess(ctx, executable, []string{"-test.run=^TestGitProcessHelper$", "--", "gitvault-helper", "early-exit", root}, []string{"LANG=C"}, root, nil, options, func(pid int) error {
+		observedPID = pid
+		group, groupErr := syscall.Getpgid(pid)
+		if groupErr != nil || group != pid {
+			return fmt.Errorf("child process group was not assigned before release")
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("owned child did not run after startup registration: %v", err)
+	}
+	if observedPID <= 0 {
+		t.Fatal("startup registration did not observe a child PID")
+	}
+	assertWriterStopped(t, root)
+}
+
+func TestGitExecutableStartupBarrier(t *testing.T) {
+	root := t.TempDir()
+	options := DefaultGitRunnerOptions()
+	options.CommandTimeout = 5 * time.Second
+	executable, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal("Git fixture unavailable")
+	}
+	var observedPID int
+	out, err := runOwnedProcess(context.Background(), executable, []string{"--version"}, []string{"PATH=" + filepath.Dir(executable), "LANG=C"}, root, nil, options, func(pid int) error {
+		observedPID = pid
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Git executable did not run after startup registration: %v", err)
+	}
+	if observedPID <= 0 || !strings.HasPrefix(string(out.stdout), "git version ") {
+		t.Fatalf("unexpected Git startup-barrier result: pid=%d stdout=%q", observedPID, out.stdout)
+	}
 }
 
 // Executed only in child test binaries; the ordinary top-level invocation also

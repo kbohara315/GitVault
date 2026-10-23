@@ -24,6 +24,10 @@ type Request struct {
 	Source             string
 	Repository         RepositoryIdentity
 	ApplicationVersion string
+	// ManagedGitHubMirror grants only the exact engine-owned stable-ID mirror
+	// path as a snapshot source. The engine still validates and locks that mirror
+	// under its managed root before reading it.
+	ManagedGitHubMirror bool
 	// SnapshotID is reserved by a durable coordinator before work starts. Empty
 	// preserves the standalone engine's generated-ID behavior.
 	SnapshotID string
@@ -100,22 +104,33 @@ func (e *Engine) Create(ctx context.Context, req Request) (Result, error) {
 	if err != nil {
 		return resultFailure(ErrUnsafeRepository)
 	}
-	if pathsOverlap(source, e.root) {
+	managedMirror := req.ManagedGitHubMirror && req.Repository.Provider == "github" && canonicalGitHubRepositoryID(req.Repository.ID) && source == filepath.Join(e.root, "mirrors", "github", req.Repository.ID+".git")
+	if req.ManagedGitHubMirror && !managedMirror {
 		return resultFailure(ErrUnsafeRepository)
 	}
-	if repositoryHeadMissing(source) {
-		return resultFailure(ErrGitUnsupported)
+	if pathsOverlap(source, e.root) && !managedMirror {
+		return resultFailure(ErrUnsafeRepository)
 	}
 	unlock, err := e.lock(ctx, true)
 	if err != nil {
 		return resultFailure(err)
 	}
 	defer unlock()
+	if managedMirror {
+		unlockMirror, lockErr := lockGitHubMirror(ctx, filepath.Join(e.root, "mirrors", "github"), req.Repository.ID)
+		if lockErr != nil {
+			return resultFailure(lockErr)
+		}
+		defer unlockMirror()
+	}
 	if err = e.validateRootIdentity(); err != nil {
 		return resultFailure(err)
 	}
 	if err = e.authorizeManagedMutation(); err != nil {
 		return resultFailure(err)
+	}
+	if repositoryHeadMissing(source) {
+		return resultFailure(ErrGitUnsupported)
 	}
 	if err = e.ensureManagedDirectories(req.Repository.Provider); err != nil {
 		return resultFailure(err)
