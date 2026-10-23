@@ -10,6 +10,7 @@ const (
 	Refresh          CommandKind = "refresh"
 	BindRoot         CommandKind = "bind_root"
 	SaveToken        CommandKind = "save_token"
+	RemoveToken      CommandKind = "remove_token"
 	Discover         CommandKind = "discover"
 	SelectRepository CommandKind = "select_repository"
 	BackupLocal      CommandKind = "backup_local"
@@ -35,7 +36,7 @@ type Command struct {
 	Kind                                                              CommandKind
 	Source, Root, SnapshotID, SnapshotPath, Destination, RepositoryID string
 	Selected, Confirm                                                 bool
-	Token                                                             string
+	Secret                                                            []byte
 	Settings                                                          SettingsDraft
 	Schedule                                                          ScheduleDraft
 	Retention                                                         RetentionDraft
@@ -69,17 +70,18 @@ type TaskView struct {
 }
 
 type ViewState struct {
-	Revision                                               int64
-	Busy, CanCancel, CanBindRoot, CanStartLocal, Connected bool
-	Status, Notice, Error, Account                         string
-	Settings                                               SettingsDraft
-	Schedule                                               ScheduleDraft
-	Retention                                              RetentionDraft
-	Repositories                                           []RepositoryView
-	Snapshots                                              []SnapshotView
-	Remote                                                 []SnapshotView
-	Tasks                                                  []TaskView
-	RetentionPreviewID, RetentionSummary, CatchUpOffer     string
+	Revision                                                  int64
+	Busy, CanCancel, CanBindRoot, CanStartLocal, Connected    bool
+	CredentialConfigured, CanManageCredential, CredentialBusy bool
+	Status, Notice, Error, Account                            string
+	Settings                                                  SettingsDraft
+	Schedule                                                  ScheduleDraft
+	Retention                                                 RetentionDraft
+	Repositories                                              []RepositoryView
+	Snapshots                                                 []SnapshotView
+	Remote                                                    []SnapshotView
+	Tasks                                                     []TaskView
+	RetentionPreviewID, RetentionSummary, CatchUpOffer        string
 }
 
 // Backend's snapshot is an in-memory copy, not a database/network query. Submit

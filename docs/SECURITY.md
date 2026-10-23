@@ -30,7 +30,7 @@ Assume remote names, URLs, error text, bundle files, and manifests are untrusted
 
 ## Git authentication design gate
 
-Choose and test a credential delivery strategy before private-repository support. A short-lived helper/broker can supply credentials only for the expected host and job. Keep secrets out of helper filenames, arguments, on-disk helper scripts, and logs. Refuse unexpected redirects/hosts according to a documented policy. Suppress interactive prompts for unattended runs.
+The Linux I06 slice implements and synthetic-tests a short-lived helper/broker scoped to one `github.com` repository and one authenticated Git process group. It uses a private Unix socket, checks peer UID/process group/executable, refuses helper operations other than `get`, and emits credentials only on the Git protocol pipe. GitHub discovery/acquisition is not yet wired, so this is not evidence of a completed private-repository backup flow. Keep secrets out of helper filenames, arguments, on-disk helper scripts, URLs, and logs. Future acquisition must refuse unexpected redirects/hosts and suppress interactive prompts for unattended runs.
 
 On Unix and Windows, implement child-process cancellation for the whole owned process tree. A context that kills only the parent Git process can leave helpers running. Test this explicitly.
 
@@ -38,7 +38,7 @@ Use argument-vector execution, e.g. `exec.CommandContext`, with validated argume
 
 ## Secret storage
 
-Evaluate platform credential APIs or a maintained cross-platform adapter. Treat a locked, unavailable, or missing secret store as an explicit error. Do not fall back to plaintext automatically. Document Linux session-service requirements after selecting the adapter. Clearing a Go byte slice is best-effort; do not promise complete memory erasure.
+I06 uses the pinned MyGo v0.6.2 platform credential API behind `internal/secrets`. The UI draft owns token bytes, masks the displayed value and text-input queries, and clears its owned byte buffer on replacement, submission, navigation, and shutdown. MyGo's native callbacks still deliver transient Go strings; the app does not retain those strings, but cannot zero copies made by the framework or OS. This is not a complete memory-erasure guarantee. The Linux/amd64 host passed a synthetic Set/Get/Delete round trip through its live Secret Service; missing, denied/locked, unavailable, and pending-call outcomes remain explicit. This does not qualify other Linux desktops, macOS, Windows, or all prompt/lock states. Do not fall back to plaintext automatically.
 
 The selected technical direction is the existing MyGo v0.6.2 native Secrets adapter; [DEPENDENCIES.md](DEPENDENCIES.md) records primary-source evidence and qualification limits. Native calls may block for consent/unlock and have no context cancellation. Bound outstanding calls and reject stale results after cancellation; never spawn unbounded timeout goroutines or claim the OS prompt was terminated. Unattended jobs may not trigger unlock prompts: require a qualified noninteractive path or an explicitly authorized still-valid bounded session lease; otherwise report interaction required.
 

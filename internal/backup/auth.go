@@ -54,7 +54,7 @@ type credentialBrokerPlatform interface {
 }
 
 func NewCredentialBroker(o CredentialBrokerOptions) (*CredentialBroker, error) {
-	if o.Context == nil || o.Context.Err() != nil || o.AllowedHost != "github.com" || !credentialRepository(o.AllowedRepository) || !credentialValue(o.Username, 256) || !credentialValue(string(o.Secret), credentialSecretLimit) || !filepath.IsAbs(o.PrivateDir) || !filepath.IsAbs(o.Executable) {
+	if o.Context == nil || o.Context.Err() != nil || o.AllowedHost != "github.com" || !credentialRepository(o.AllowedRepository) || !credentialValue(o.Username, 256) || !credentialBytes(o.Secret, credentialSecretLimit) || !filepath.IsAbs(o.PrivateDir) || !filepath.IsAbs(o.Executable) {
 		return nil, ErrCredentialDenied
 	}
 	p, err := newCredentialBrokerPlatform(o)
@@ -114,6 +114,18 @@ func credentialValue(s string, limit int) bool {
 		return false
 	}
 	for _, c := range []byte(s) {
+		if c < 33 || c > 126 {
+			return false
+		}
+	}
+	return true
+}
+
+func credentialBytes(value []byte, limit int) bool {
+	if len(value) == 0 || len(value) > limit {
+		return false
+	}
+	for _, c := range value {
 		if c < 33 || c > 126 {
 			return false
 		}

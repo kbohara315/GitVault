@@ -2,14 +2,14 @@
 
 A native Go desktop application for local-first Git repository backup and recovery.
 
-**Status: implementation in progress; not ready to protect data.** I01–I05 are accepted for their documented Linux-host implementation scope, including native Start/Cancel smoke for I05. Non-Linux and broader filesystem/crash behavior remain unqualified. GitHub discovery, native credentials, cloud copies, schedules, retention, and restoration are not wired into this build. See [current task status](docs/implementation/TASKS.md).
+**Status: implementation in progress; not ready to protect data.** I01–I06 are accepted for their documented Linux/amd64 implementation scope, including native Start/Cancel smoke for I05 and synthetic Secret Service round-trip evidence for I06. Native locked/pending-prompt behavior and other platforms remain unqualified; no real GitHub request or remote acquisition is wired. I07–I16 remain unimplemented. Broader filesystem/crash behavior remains unqualified. Cloud copies, schedules, retention, and restoration are not wired into this build. See [current task status](docs/implementation/TASKS.md).
 
 ## Technology
 
 - MyGo **v0.6.2**, pinned in `go.mod` for both runtime and CLI.
 - Native GPU-drawn UI written in Go.
 - Planned backup format: full Git bundles created from local bare mirrors.
-- SQLite stores typed configuration and durable local run/snapshot metadata. OS-backed credential storage and remote/cloud settings are planned, not wired.
+- SQLite stores typed configuration and durable local run/snapshot metadata. Credential settings contain only native-store references and generations; the PAT value is stored through MyGo's OS credential service. GitHub discovery/acquisition and remote/cloud settings remain unimplemented.
 - Planned optional cloud storage: AWS S3 and Cloudflare R2.
 
 MyGo draws its own controls. “Native” does not mean standard OS widget controls. Its pre-1.0 API and platform support need validation before release.

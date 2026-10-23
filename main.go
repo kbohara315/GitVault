@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	"gitvault/internal/backup"
 	"gitvault/internal/config"
 	"gitvault/internal/desktop"
+	"gitvault/internal/secrets"
 	"gitvault/internal/store"
 
 	"github.com/egoist/mygo"
@@ -20,12 +22,25 @@ import (
 )
 
 func main() {
+	if handled, code := dispatchCredentialHelper(os.Args[1:], os.Stdin, os.Stdout, os.Stderr); handled {
+		os.Exit(code)
+	}
 	if err := run(); err != nil {
 		log.Fatal(err)
 	}
 }
 
+// dispatchCredentialHelper must stay before run: private Git helper invocations
+// must not initialize the UI, database, logger, or secret-store adapter.
+func dispatchCredentialHelper(args []string, stdin io.Reader, stdout, stderr io.Writer) (bool, int) {
+	return backup.HelperMain(context.Background(), args, stdin, stdout, stderr)
+}
+
 func run() error {
+	credentials, err := secrets.NewNative("gitvault", secrets.NativeDevelopmentBuild)
+	if err != nil {
+		return fmt.Errorf("initialize native credential adapter: %w", err)
+	}
 	configDir, err := os.UserConfigDir()
 	if err != nil {
 		return fmt.Errorf("resolve application data directory: %w", err)
@@ -36,8 +51,9 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("open local application database: %w", err)
 	}
-	workflow, err := app.NewLocalWorkflow(ctx, s, buildLocalEngine(s))
+	workflow, err := app.NewLocalWorkflowWithCredentials(ctx, s, buildLocalEngine(s), credentials)
 	if err != nil {
+		credentials.CloseLeases()
 		return errors.Join(fmt.Errorf("start local workflow: %w", err), s.Close())
 	}
 	current, err := s.CurrentConfig(ctx)
@@ -60,6 +76,7 @@ func run() error {
 		})
 	})
 	runErr := mygo.App.Run()
+	view.ClearSensitiveDrafts()
 	closeCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	closeErr := workflow.Close(closeCtx)
 	cancel()

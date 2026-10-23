@@ -1,6 +1,7 @@
 package backup
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"net"
@@ -246,7 +247,7 @@ func credentialHelperExchange(ctx context.Context, socket string, pid int, host,
 	}
 	data, err := io.ReadAll(io.LimitReader(c, credentialSecretLimit+512))
 	defer clear(data)
-	if err != nil || len(data) == 0 || len(data) >= credentialSecretLimit+512 || !strings.HasPrefix(string(data), "username=") || !strings.HasSuffix(string(data), "\n\n") || ctx.Err() != nil {
+	if err != nil || len(data) == 0 || len(data) >= credentialSecretLimit+512 || !bytes.HasPrefix(data, []byte("username=")) || !bytes.HasSuffix(data, []byte("\n\n")) || ctx.Err() != nil {
 		return ErrCredentialDenied
 	}
 	n, err := out.Write(data)

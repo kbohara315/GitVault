@@ -1,6 +1,6 @@
 # Configuration contract
 
-**Status: the typed configuration core is implemented for current local consumers (root, concurrency, finite limits/timeouts, and immutable revisions); I05 is accepted for Linux-host implementation scope. Cloud, schedule, and secret settings remain future integration work.** This document owns settings interpretation, not the portable artifact format in `BACKUP-FORMAT.md`. Technical defaults delegated to implementation agents are not human release approval, permission to access credentials, cloud disclosure consent, or deletion authority.
+**Status: the typed configuration core is implemented for current local consumers (root, concurrency, finite limits/timeouts, immutable revisions, and the I06 GitHub credential handle); I05 and I06 are accepted for their documented Linux/amd64 implementation scopes. Cloud and schedule settings remain future integration work.** This document owns settings interpretation, not the portable artifact format in `BACKUP-FORMAT.md`. Technical defaults delegated to implementation agents are not human release approval, permission to access credentials, cloud disclosure consent, or deletion authority.
 
 ## Ownership and composition
 
@@ -13,7 +13,7 @@
 
 ## Bootstrap and persistence
 
-1. Resolve the platform application-data directory using the platform adapter and the stable application identifier. The exact production identifier is a release gate. Development and production use separate directories and secret-service namespaces.
+1. Resolve the platform application-data directory using the platform adapter and the stable application identifier. The exact production identifier is a release gate. Development and production use separate directories and secret-service namespaces. Default builds use the development namespace; the explicit `gitvaultrelease` build tag selects the production secret namespace, but does not qualify or approve a release.
 2. Place `gitvault.sqlite3` below that local application-data directory; log files go in its `logs` child. Do not place SQLite/WAL in the backup root, on a network filesystem, or in a synchronized folder. Fail with an actionable error if the directory cannot be safely created/opened; do not fall back to the working directory.
 3. Acquire application/database ownership before migration. Create the first schema and default settings transactionally. Do not require GitHub, cloud, or secret-store access to open Settings or restore an imported full snapshot.
 4. The backup root starts unset. The user selects an absolute local directory; validation and an explicit idle rebind establish its identity and managed subdirectories. No default path silently starts a backup. Restore destination is a per-operation intent, never a remembered overwrite permission.
@@ -104,7 +104,7 @@ No target is created by default. When adding one, all fields below are required 
 
 A credential handle is exactly `{"reference":"opaque-store-key","generation":1}`. Reference is 1–128 ASCII letters/digits/hyphen/underscore; generation is integer 1–2,147,483,647. It points into a stable dev/prod-separated OS service namespace, not a credential file or URL. Payload encoding belongs to the secret adapter; validate its 2,560-byte maximum before calling MyGo. Do not expose access keys, tokens, session tokens, passwords, or values in configuration, run records, manifests, diagnostics, or fixtures.
 
-Rotation writes a new immutable generation before publishing a settings revision. Accepted work retains its original generation; revoked/missing credentials fail explicitly instead of switching identity. Retain old generations until active leases end, then offer scoped cleanup. Bound native secret operations to one outstanding call; an OS unlock prompt has no cancellable MyGo API. Cancellation may discard its eventual result but cannot promise terminating the prompt. No plaintext fallback.
+Rotation writes a new immutable generation before publishing a settings revision. Accepted work retains its original generation; revoked/missing credentials fail explicitly instead of switching identity. Retain old generations until active leases end, then offer scoped cleanup. Removal clears the settings reference before deleting only that captured generation; if native deletion cannot be confirmed, GitVault stops using the token and reports that it may remain in OS storage. Bound native secret operations to one outstanding call; an OS unlock prompt has no cancellable MyGo API. Cancellation may discard its eventual result but cannot promise terminating the prompt. No plaintext fallback.
 
 ## Cross-field validation and invariants
 

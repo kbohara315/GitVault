@@ -28,6 +28,7 @@ type App struct {
 	rootDirty     bool
 	settings      app.SettingsDraft
 	source        string
+	githubToken   secretDraft
 	error         string
 }
 
@@ -37,6 +38,7 @@ func NewWithBackend(backend app.Backend) *App { return &App{backend: backend} }
 // send reports whether the bounded admission queue accepted the command. View
 // text never claims that an operation succeeded; workers publish that truth.
 func (a *App) send(cmd app.Command) bool {
+	defer clear(cmd.Secret)
 	if a.backend == nil {
 		a.error = "Application is not connected"
 		return false
@@ -53,6 +55,9 @@ func (a *App) send(cmd app.Command) bool {
 // user has no unsaved edits. A stale save therefore fails its revision check
 // instead of silently overwriting a newer configuration.
 func (a *App) observe(s app.ViewState) {
+	if !s.CanManageCredential || s.Busy || s.CredentialBusy {
+		a.githubToken.Clear()
+	}
 	if !s.Connected {
 		return
 	}
@@ -103,6 +108,9 @@ func (a *App) View(c *ui.Context) {
 		ui.Row(c).Gap(8).Children(func() {
 			for i, p := range pages {
 				if ui.Button(c, p.name).Clicked() {
+					if a.selected == 1 && i != 1 {
+						a.githubToken.Clear()
+					}
 					a.selected = i
 				}
 			}
@@ -137,6 +145,11 @@ func (a *App) View(c *ui.Context) {
 	// Only painting is scheduled here; this is not the backup scheduler.
 	c.After(200 * time.Millisecond)
 }
+
+// ClearSensitiveDrafts overwrites the UI-owned byte draft after the native loop
+// stops. This is best-effort; it cannot erase transient strings created inside
+// the native text-input implementation or copies already made by the OS.
+func (a *App) ClearSensitiveDrafts() { a.githubToken.Clear() }
 
 func field(c *ui.Context, label string, value *string) bool {
 	return ui.TextInput(c, value).Label(label).Placeholder(label).Width(560).Changed()
@@ -176,7 +189,35 @@ func (a *App) overview(c *ui.Context, s app.ViewState) {
 }
 
 func (a *App) repositories(c *ui.Context, s app.ViewState) {
-	ui.Text(c, "GitHub discovery, credential setup, and repository selection are not available in this build.").Wrap()
+	if !s.Connected {
+		ui.Text(c, "GitHub credential management is unavailable while the application is not connected.").Wrap()
+	} else if !s.CanManageCredential {
+		if s.Busy || s.CredentialBusy {
+			ui.Text(c, "GitHub credential changes are unavailable while another operation is active.").Wrap()
+		} else {
+			ui.Text(c, "Native GitHub credential setup is not available because the OS secure store is unavailable.").Wrap()
+		}
+	} else {
+		if s.CredentialConfigured {
+			ui.Text(c, "A GitHub credential is configured in OS secure storage. Its value is never shown here.").Wrap()
+		} else {
+			ui.Text(c, "No GitHub credential is configured.").Wrap()
+		}
+		a.githubTokenInput(c)
+		if ui.Button(c, "Save or replace GitHub token").Disabled(s.Busy || s.CredentialBusy || a.githubToken.Empty()).Clicked() {
+			secret := a.githubToken.CopyBytes()
+			a.githubToken.Clear()
+			a.send(app.Command{Kind: app.SaveToken, ExpectedRevision: s.Revision, Secret: secret})
+			clear(secret)
+		}
+		if s.CredentialConfigured {
+			if ui.Button(c, "Remove configured GitHub token").Disabled(s.Busy || s.CredentialBusy).Clicked() {
+				a.send(app.Command{Kind: app.RemoveToken, ExpectedRevision: s.Revision})
+			}
+		}
+		ui.Text(c, "Use the least access needed and limit fine-grained tokens to repositories you choose. Organization policy may require approval or block personal access tokens. Replacing a token creates a new generation; earlier generations remain for already accepted work. Removal clears only the configured generation.").Wrap()
+		ui.Text(c, "GitHub discovery, repository selection, and remote backup are not available until later implementation tasks.").Wrap()
+	}
 	ui.Text(c, "Local backups use a filesystem path and do not require an account or a selection.").Wrap()
 	if len(s.Repositories) == 0 {
 		ui.Text(c, "No repositories are available.").TextColor(c.Theme().TextMuted)
@@ -192,6 +233,30 @@ func (a *App) repositories(c *ui.Context, s app.ViewState) {
 		}
 		ui.Text(c, line).Wrap()
 	}
+}
+
+func (a *App) githubTokenInput(c *ui.Context) {
+	t := c.Theme()
+	display := a.githubToken.Mask()
+	ui.Box(c).
+		Width(secretInputWidth).
+		Height(42).
+		Padding(10).
+		Background(t.Surface).
+		Border(1, t.Border).
+		Radius(t.Radius).
+		Label("GitHub personal access token").
+		HandleTextInput(&a.githubToken).
+		InputMethod(false).
+		HandleInput(a.githubToken.HandleInput).
+		FocusRing(true).
+		Children(func() {
+			if a.githubToken.Empty() {
+				ui.Text(c, "Paste or type a token (masked)").FontSize(secretInputFontSize).TextColor(t.TextMuted)
+				return
+			}
+			ui.Text(c, display).FontSize(secretInputFontSize)
+		})
 }
 
 // localDestination presents the one managed folder explicitly. Editing the
@@ -287,7 +352,7 @@ func (a *App) preferences(c *ui.Context, s app.ViewState) {
 	ui.Text(c, "This save changes non-root local settings only. Use Bind backup folder to change the managed folder explicitly.").Wrap()
 
 	ui.Text(c, "Unavailable in this build").Bold()
-	ui.Text(c, "GitHub discovery and selection, credential storage, cloud copies, schedules, retention preview or deletion, and restore are not implemented yet. No control is shown for them.").Wrap()
+	ui.Text(c, "GitHub discovery and selection, remote backups, cloud copies, schedules, retention preview or deletion, and restore are not implemented yet.").Wrap()
 }
 
 func short(id string) string {

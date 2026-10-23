@@ -373,6 +373,19 @@ func TestCredentialSentinelIsolation(t *testing.T) {
 }
 
 func TestBrokerCancellationAndOfflineIsolation(t *testing.T) {
+	t.Run("offline-runner-remains-transport-denied", func(t *testing.T) {
+		scratch := filepath.Join(t.TempDir(), "git-scratch")
+		if err := os.Mkdir(scratch, 0700); err != nil {
+			t.Fatal("scratch directory unavailable")
+		}
+		runner, err := NewGitRunner(scratch, DefaultGitRunnerOptions())
+		if err != nil {
+			t.Fatal("controlled Git runner unavailable")
+		}
+		if err = runner.checkTransport(context.Background(), gitOffline, []string{"fetch", "https://github.com/fixture/private.git"}); !errors.Is(err, ErrGitTransportDenied) {
+			t.Fatal("offline recovery accepted network transport")
+		}
+	})
 	t.Run("cancel-revokes-before-request-and-zeroes-owned-copy", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		b, dir, _ := credentialTestBroker(t, ctx)

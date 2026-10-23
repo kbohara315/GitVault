@@ -40,11 +40,14 @@ func nativeError(err error) error {
 	if errors.Is(err, fs.ErrPermission) {
 		return ErrDenied
 	}
-	// MyGo v0.6.2 preserves these Security.framework statuses only in
-	// formatted text. Unknown/localized errors remain unavailable, never
-	// guessed as not-found and never exposed to callers.
-	for _, code := range []string{"(OSStatus -128)", "(OSStatus -25293)", "(OSStatus -25308)"} {
-		if strings.Contains(err.Error(), code) {
+	// MyGo v0.6.2 preserves these platform denial identifiers only in
+	// formatted text. Match only stable codes/names, never localized text;
+	// unknown errors remain unavailable and are not exposed to callers.
+	for _, marker := range []string{
+		"(OSStatus -128)", "(OSStatus -25293)", "(OSStatus -25308)",
+		"org.freedesktop.Secret.Error.IsLocked", "org.freedesktop.DBus.Error.AccessDenied",
+	} {
+		if strings.Contains(err.Error(), marker) {
 			return ErrDenied
 		}
 	}

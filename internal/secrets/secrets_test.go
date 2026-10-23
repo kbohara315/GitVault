@@ -55,6 +55,12 @@ func TestSecretAdapterOutcomes(t *testing.T) {
 	if _, e := NewNative("", false); e != ErrInvalid {
 		t.Fatal("empty native namespace allowed")
 	}
+	if nativeError(errors.New("GDBus.Error:org.freedesktop.Secret.Error.IsLocked: synthetic")) != ErrDenied {
+		t.Fatal("canonical Secret Service locked outcome was not classified as denied")
+	}
+	if nativeError(errors.New("localized backend diagnostic")) != ErrUnavailable {
+		t.Fatal("unknown native diagnostic was exposed or guessed as denied")
+	}
 }
 
 type blockingBackend struct {

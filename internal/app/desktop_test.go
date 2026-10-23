@@ -16,8 +16,17 @@ func TestLocalWorkflowSubmitIsBoundedAndRejectsUnsupportedCommands(t *testing.T)
 	if err := w.Submit(Command{Kind: Refresh}); !errors.Is(err, ErrCommandQueueFull) {
 		t.Fatalf("full command queue did not fail promptly: %v", err)
 	}
-	if err := w.Submit(Command{Kind: SaveToken, Token: "synthetic-sentinel"}); !errors.Is(err, ErrUnsupportedCommand) {
-		t.Fatalf("unsupported secret command accepted: %v", err)
+	secret := []byte("synthetic-sentinel")
+	if err := w.Submit(Command{Kind: SaveToken, Secret: secret}); !errors.Is(err, ErrCredentialUnavailable) {
+		t.Fatalf("credential command without native storage accepted: %v", err)
+	}
+	for _, b := range secret {
+		if b != 0 {
+			t.Fatal("rejected credential bytes were not cleared")
+		}
+	}
+	if err := w.Submit(Command{Kind: Discover}); !errors.Is(err, ErrUnsupportedCommand) {
+		t.Fatalf("unsupported discovery command accepted: %v", err)
 	}
 	if len(w.commands) != 1 {
 		t.Fatalf("unsupported command entered queue: %d queued commands", len(w.commands))

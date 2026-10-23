@@ -1,6 +1,6 @@
 # Full-release implementation plan
 
-**Canonical execution entry point. Status: implementation in progress. I01–I05 slices are accepted for Linux-host implementation scope; I05 includes automated gates and native Start/Cancel smoke. Non-Linux and broader filesystem/crash qualification remain pending. I06–I16 are still to be implemented. No release approval or universal platform qualification is implied.**
+**Canonical execution entry point. Status: implementation in progress. I01–I06 slices are accepted for their documented Linux/amd64 implementation scopes; I05 includes automated gates and native Start/Cancel smoke, and I06 includes automated gates plus a synthetic native-store round trip and independent review. I07–I16 remain to be implemented. Non-Linux, native locked/pending-prompt, and broader filesystem/crash qualification remain pending. No release approval or universal platform qualification is implied.**
 
 ## Destination
 

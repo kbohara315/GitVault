@@ -12,13 +12,15 @@ import (
 
 	"gitvault/internal/backup"
 	"gitvault/internal/config"
+	"gitvault/internal/secrets"
 	"gitvault/internal/store"
 )
 
 var (
-	ErrWorkflowClosed     = errors.New("local workflow is closed")
-	ErrCommandQueueFull   = errors.New("application command queue is full")
-	ErrUnsupportedCommand = errors.New("this command is not available in the current build")
+	ErrWorkflowClosed             = errors.New("local workflow is closed")
+	ErrCommandQueueFull           = errors.New("application command queue is full")
+	ErrUnsupportedCommand         = errors.New("this command is not available in the current build")
+	ErrCredentialOperationPending = errors.New("native credential interaction is pending")
 )
 
 // LocalEngineBuilder maps one immutable configuration revision to backup-owned
@@ -35,15 +37,16 @@ type workflowCompletion struct {
 // application coordination, and immutable UI snapshots. Its worker is the only
 // writer of presentation state. Views only call Snapshot and nonblocking Submit.
 type LocalWorkflow struct {
-	store    *store.Store
-	build    LocalEngineBuilder
-	ctx      context.Context
-	cancel   context.CancelFunc
-	events   *Events
-	commands chan Command
-	progress chan backup.ProgressEvent
-	finished chan workflowCompletion
-	done     chan struct{}
+	store       *store.Store
+	build       LocalEngineBuilder
+	credentials CredentialStore
+	ctx         context.Context
+	cancel      context.CancelFunc
+	events      *Events
+	commands    chan Command
+	progress    chan backup.ProgressEvent
+	finished    chan workflowCompletion
+	done        chan struct{}
 
 	mu    sync.RWMutex
 	state ViewState
@@ -63,6 +66,12 @@ type LocalWorkflow struct {
 // state, validates any existing managed-root binding, reconciles interrupted
 // work, and then starts one bounded command worker.
 func NewLocalWorkflow(parent context.Context, s *store.Store, build LocalEngineBuilder) (*LocalWorkflow, error) {
+	return NewLocalWorkflowWithCredentials(parent, s, build, nil)
+}
+
+// NewLocalWorkflowWithCredentials composes explicit native credential
+// onboarding into the same bounded worker that owns durable settings edits.
+func NewLocalWorkflowWithCredentials(parent context.Context, s *store.Store, build LocalEngineBuilder, credentials CredentialStore) (*LocalWorkflow, error) {
 	if parent == nil || s == nil || build == nil {
 		return nil, errors.New("application context, store, and engine builder are required")
 	}
@@ -78,11 +87,11 @@ func NewLocalWorkflow(parent context.Context, s *store.Store, build LocalEngineB
 	ctx, cancel := context.WithCancel(parent)
 	queueCapacity := min(capacity, 256)
 	w := &LocalWorkflow{
-		store: s, build: build, ctx: ctx, cancel: cancel,
+		store: s, build: build, credentials: credentials, ctx: ctx, cancel: cancel,
 		events: NewEvents(capacity), commands: make(chan Command, queueCapacity),
 		progress: make(chan backup.ProgressEvent, capacity), finished: make(chan workflowCompletion, 1),
 		done:  make(chan struct{}),
-		state: ViewState{Connected: true, Revision: revision.ID(), Settings: settingsDraft(values), Status: "Choose an existing local folder and bind it before starting a backup."},
+		state: ViewState{Connected: true, Revision: revision.ID(), Settings: settingsDraft(values), CanManageCredential: credentials != nil, Status: "Choose an existing local folder and bind it before starting a backup."},
 	}
 	if err = w.initializeExistingRoot(parent, values); err != nil {
 		cancel()
@@ -207,33 +216,68 @@ func (w *LocalWorkflow) Updates() <-chan ViewState { return w.events.Updates() }
 // Submit is deliberately nonblocking. Unsupported commands are rejected before
 // queueing, so credentials or future-operation payloads are never retained.
 func (w *LocalWorkflow) Submit(command Command) error {
+	inputSecret := command.Secret
+	defer clear(inputSecret)
 	switch command.Kind {
-	case Refresh, BindRoot, SaveSettings, BackupLocal, Cancel:
+	case Refresh, BindRoot, SaveSettings, BackupLocal, Cancel, SaveToken, RemoveToken:
 	default:
 		return ErrUnsupportedCommand
 	}
+	if command.Kind == SaveToken {
+		if w.credentials == nil {
+			return ErrCredentialUnavailable
+		}
+		if len(inputSecret) == 0 || len(inputSecret) > secrets.MaxValueBytes {
+			return errors.New("credential input must be between 1 and 2560 bytes")
+		}
+		command.Secret = append([]byte(nil), inputSecret...)
+	} else if len(inputSecret) != 0 {
+		return errors.New("credential input is not valid for this command")
+	}
+	if command.Kind == RemoveToken && w.credentials == nil {
+		return ErrCredentialUnavailable
+	}
 	for _, value := range []string{command.Source, command.Root, command.Settings.Root, command.Settings.Concurrency} {
 		if len(value) > 32768 {
+			clear(command.Secret)
 			return errors.New("command input exceeds its bound")
 		}
 	}
 	w.mu.RLock()
 	defer w.mu.RUnlock()
 	if w.closed || w.ctx.Err() != nil {
+		clear(command.Secret)
 		return ErrWorkflowClosed
+	}
+	credentialCommand := command.Kind == SaveToken || command.Kind == RemoveToken
+	if (w.state.CredentialBusy || w.credentials != nil && w.credentials.Pending() || credentialCommand && w.state.Busy) && command.Kind != Refresh {
+		clear(command.Secret)
+		return ErrCredentialOperationPending
 	}
 	select {
 	case w.commands <- command:
 		return nil
 	case <-w.ctx.Done():
+		clear(command.Secret)
 		return ErrWorkflowClosed
 	default:
+		clear(command.Secret)
 		return ErrCommandQueueFull
 	}
 }
 
 func (w *LocalWorkflow) loop() {
-	defer close(w.done)
+	defer func() {
+		for {
+			select {
+			case command := <-w.commands:
+				clear(command.Secret)
+			default:
+				close(w.done)
+				return
+			}
+		}
+	}()
 	for {
 		select {
 		case <-w.ctx.Done():
@@ -249,6 +293,7 @@ func (w *LocalWorkflow) loop() {
 }
 
 func (w *LocalWorkflow) handle(command Command) {
+	defer clear(command.Secret)
 	switch command.Kind {
 	case Refresh:
 		w.refreshDurableView(w.ctx)
@@ -258,6 +303,10 @@ func (w *LocalWorkflow) handle(command Command) {
 		w.bindRoot(command)
 	case BackupLocal:
 		w.startLocal(command)
+	case SaveToken:
+		w.saveGitHubToken(command)
+	case RemoveToken:
+		w.removeGitHubToken(command)
 	case Cancel:
 		w.cancelRun()
 	default:
@@ -535,6 +584,7 @@ func (w *LocalWorkflow) refreshDurableView(ctx context.Context) {
 	w.mutate(func(s *ViewState) {
 		s.Revision = current.ID()
 		s.Settings = settingsDraft(values)
+		s.CredentialConfigured = values.GitHub.Credential != nil
 		s.Connected = true
 	})
 
@@ -600,6 +650,7 @@ func (w *LocalWorkflow) recomputeControls() {
 	state.CanStartLocal = !busy && bound && configured
 	state.CanBindRoot = !busy && !w.closed && !w.rootRebindBlocked
 	state.CanCancel = w.activeRunID != ""
+	state.CanManageCredential = w.credentials != nil && !busy && !w.closed && !state.CredentialBusy && !w.credentials.Pending()
 	w.state = CopyView(state)
 	w.mu.Unlock()
 	w.events.Publish(state)
@@ -633,13 +684,24 @@ func (w *LocalWorkflow) Close(ctx context.Context) error {
 		w.cancel()
 	}
 	w.mu.Unlock()
+	// Revoke volatile credential leases as soon as admission stops. A timeout
+	// while waiting for the worker/coordinator must not keep unattended access.
+	if w.credentials != nil {
+		w.credentials.CloseLeases()
+	}
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
 	case <-w.done:
 	}
+	var closeErr error
 	if w.coordinator != nil {
-		return w.coordinator.Close(ctx)
+		closeErr = w.coordinator.Close(ctx)
 	}
-	return nil
+	if w.credentials != nil {
+		if w.credentials.Pending() {
+			closeErr = errors.Join(closeErr, ErrCredentialOperationPending)
+		}
+	}
+	return closeErr
 }
