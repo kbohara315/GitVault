@@ -1,6 +1,6 @@
 # Full-release implementation plan
 
-**Canonical execution entry point. Status: implementation in progress. I01–I03 are implemented; I03 is accepted for Linux host scope only, with other platform/filesystem qualification pending. Durable coordinator integration is the next slice; the desktop still starts without its real backend. No release approval or universal platform qualification is implied.**
+**Canonical execution entry point. Status: implementation in progress. I01–I04 implementation slices are accepted for Linux-host scope; I03/I04 non-Linux and broader filesystem/crash qualification remains pending. The native desktop still starts without its real backend; I05 workflow integration is next. No release approval or universal platform qualification is implied.**
 
 ## Destination
 

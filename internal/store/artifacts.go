@@ -320,6 +320,9 @@ func taskStageTransitionAllowed(from, to string) bool {
 	if from == to || to == "failed" {
 		return true
 	}
+	if from == "local_ready" && to == "succeeded" {
+		return true // local-only completion; an upload is optional.
+	}
 	allowed := map[string]string{"pending": "fetching", "fetching": "bundling", "bundling": "verifying", "verifying": "publishing", "publishing": "local_ready", "local_ready": "uploading", "uploading": "succeeded"}
 	return allowed[from] == to
 }

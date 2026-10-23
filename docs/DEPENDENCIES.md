@@ -8,7 +8,7 @@
 | --- | --- | --- |
 | Go | retain Go **1.27.1** toolchain pin | exact toolchain in local/CI build evidence |
 | Native UI and build tool | retain MyGo **v0.6.2** pin | verify APIs against this tag, qualify each shipped OS/architecture |
-| SQLite | candidate `modernc.org/sqlite v1.61.0`, `database/sql` | requires Go 1.26+ and matching `modernc.org/libc v1.79.0`; declared requirements fit Go 1.27.1, not locally compile-verified |
+| SQLite | selected `modernc.org/sqlite v1.61.0`, `database/sql` | requires Go 1.26+ and matching `modernc.org/libc v1.79.0`; locally compiled and tested on Linux/amd64 with Go 1.27.1; other target runtime behavior remains unqualified |
 | Schema migration | embedded ordered SQL, one transaction per migration | no ORM or migration framework; test rollback and refusal paths |
 | Secret store | existing MyGo native Secrets behind narrow adapter | no new keychain dependency by default; qualify prompts/OS behavior |
 | GitHub discovery | standard `net/http`, narrow typed decoding | bounded pagination/responses, rate-limit tests, no UI networking |
@@ -52,7 +52,7 @@ Alternative, **not selected by default**: [go-keyring v0.2.8 release](https://gi
 
 ## SQLite and migrations
 
-Primary sources: [v1.61.0 module](https://github.com/modernc-org/sqlite/blob/v1.61.0/go.mod), [package docs](https://pkg.go.dev/modernc.org/sqlite@v1.61.0), [driver.go](https://github.com/modernc-org/sqlite/blob/v1.61.0/driver.go), [canonical repository](https://gitlab.com/cznic/sqlite). This recent release requires Go 1.26.0 and **libc v1.79.0**; keep exactly the libc version selected by its module, not an independent libc upgrade. Review BSD-3-Clause and third-party licensing. Documented OS/architecture pairs require actual GitVault testing before release claims.
+Primary sources: [v1.61.0 module](https://github.com/modernc-org/sqlite/blob/v1.61.0/go.mod), [package docs](https://pkg.go.dev/modernc.org/sqlite@v1.61.0), [driver.go](https://github.com/modernc-org/sqlite/blob/v1.61.0/driver.go), [canonical repository](https://gitlab.com/cznic/sqlite). This release requires Go 1.26.0 and **libc v1.79.0**; keep exactly the libc version selected by its module, not an independent libc upgrade. GitVault's `go.mod`/`go.sum` pin the resolved graph. The module is CGo-free, but its BSD-3-Clause driver, transpiled public-domain SQLite code, and bundled third-party notices still carry redistribution obligations. Its `LICENSE-3RD-PARTY.md` separates linked code from graph-only components (including an MPL-2.0 graph-only dependency); `sqlite-vec` is not imported. Linux/amd64 compile, store tests, and race tests pass with Go 1.27.1. Other target runtime behavior and the app's distribution notice packaging remain unqualified. Documented upstream OS/architecture pairs are not GitVault platform qualification.
 
 Selected implementation policy:
 

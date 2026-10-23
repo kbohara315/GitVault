@@ -24,6 +24,9 @@ type Request struct {
 	Source             string
 	Repository         RepositoryIdentity
 	ApplicationVersion string
+	// SnapshotID is reserved by a durable coordinator before work starts. Empty
+	// preserves the standalone engine's generated-ID behavior.
+	SnapshotID string
 }
 type ProgressEvent struct {
 	OperationID, RepositoryID, Stage string
@@ -90,6 +93,9 @@ func (e *Engine) Create(ctx context.Context, req Request) (Result, error) {
 	if !safeRepository(req.Repository) || !text(req.ApplicationVersion, 256) {
 		return resultFailure(ErrUnsafeRepository)
 	}
+	if req.SnapshotID != "" && !validID(req.SnapshotID) {
+		return resultFailure(ErrUnsafeRepository)
+	}
 	source, err := canonicalDirectory(req.Source, false)
 	if err != nil {
 		return resultFailure(ErrUnsafeRepository)
@@ -154,9 +160,12 @@ func (e *Engine) Create(ctx context.Context, req Request) (Result, error) {
 		r, _ := NewResult(ResultFacts{Outcome: OutcomeEmptyRepository, Publication: NotPublished})
 		return r, ErrEmptyRepository
 	}
-	id, err := NewID()
-	if err != nil {
-		return resultFailure(err)
+	id := req.SnapshotID
+	if id == "" {
+		id, err = NewID()
+		if err != nil {
+			return resultFailure(err)
+		}
 	}
 	manifest.SnapshotID = id
 	finalDir := filepath.Join(e.root, "snapshots", req.Repository.Provider, req.Repository.ID, id)

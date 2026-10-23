@@ -47,6 +47,10 @@ An edit validates a complete new revision, writes it and all required projection
 
 Each database has a persistent store ID and installation identity. The managed-root marker binds that authority and its canonical application-data location under the shared root lock. A second installation/database cannot use the same root as an independent writer or retention authority. Restore/import without that database remains read-only against original inputs and publishes only into a new destination.
 
+## Managed lock order
+
+The Linux coordinator acquires the process/root run lock (`.gitvault-coordinator.lock`) before the shared engine/root lock (`.gitvault.lock`). Binding, admission, and startup reconciliation use that order; no path acquires them in reverse. Admission holds both only for marker validation and short SQLite intent/task commits. The worker retains the run lock until Git has been reaped and terminal facts are committed, while the engine owns the shared root lock only during its mutation. Startup reconciliation holds both while it inspects exact reserved outputs and preserves unknown staging. No SQLite transaction spans Git, verification, or filesystem-tree inspection. If terminal bookkeeping fails, process/root ownership is retained until restart reconciliation or process exit.
+
 ## State machines
 
 ```text
@@ -58,8 +62,9 @@ preparing -> running -> succeeded | partial | failed
 
 Repository task:
 pending -> fetching -> bundling -> verifying -> publishing -> local_ready
+                                                               |---> succeeded (local-only)
                                                                |
-                                                    uploading (optional)
+                                                     uploading (optional)
                                                                |
                                                         succeeded | failed
 
@@ -82,6 +87,8 @@ pending -> uploading -> uploaded
 ```
 
 Persist task outcome separately from stage. An upload failure must not change a ready local snapshot into a failed local artifact. A cancelled task may still have produced a valid local snapshot; record both facts.
+
+I04 does not create deletion authorization or execute effects. If startup sees a legacy `deleting`/`deleted` snapshot row without the later I13 effect ledger, it reports the exact snapshot identity and fails managed admission closed; it does not infer completion, resume, or remove bytes. I13 must reconcile the approved effect scope and receipts before reopening managed work.
 
 The diagrams show principal flows, not permission to omit cancelled/interrupted/empty outcomes. The run coordinator owns one transition validator with exhaustive tests. There is no durable queued backlog; admission commits `preparing`. Idle means no active run. A lease cannot be expired merely because a wall-clock timestamp passed while its owner remains active; qualify liveness/renewal and clock-change behavior before deletion.
 

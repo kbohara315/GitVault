@@ -47,6 +47,7 @@ The Linux engine trusts paths against **other OS users**, not same-UID code exec
 | Duplicate snapshot ID with different bytes | quarantine logically and report conflict; never overwrite either |
 | Unowned staging | preserve and report until ownership is established; scoped cleanup only |
 | Persisted deletion intent | resume only remaining approved effects; never reimport intentionally deleting output |
+| Deletion-state row without an I13 effect ledger | report exact identity and keep managed admission closed; do not infer effects or remove bytes |
 | SQLite migration/corruption/unavailability | disable new managed jobs and deletion; offer independent local import/restore |
 | Root moved or identity changed | require explicit idle rebind/import; no implicit migration or cleanup |
 

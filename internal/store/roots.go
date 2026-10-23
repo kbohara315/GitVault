@@ -36,6 +36,19 @@ func (s *Store) RootBinding(ctx context.Context, id string) (RootBinding, error)
 	return readRoot(ctx, s.db, s.identity, id, true)
 }
 
+// ActiveRoot returns the single current managed-root binding, if one exists.
+func (s *Store) ActiveRoot(ctx context.Context) (RootBinding, error) {
+	var id string
+	err := s.db.QueryRowContext(ctx, `SELECT id FROM managed_roots WHERE active=1`).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return RootBinding{}, ErrNotFound
+	}
+	if err != nil {
+		return RootBinding{}, err
+	}
+	return readRoot(ctx, s.db, s.identity, id, true)
+}
+
 // BindRoot persists an explicitly validated idle bind/rebind. A prior root ID
 // can never be repointed; create a new root ID for a different filesystem.
 func (s *Store) BindRoot(ctx context.Context, r RootBinding) error {

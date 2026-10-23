@@ -152,6 +152,41 @@ func TestOfflineRoundTrip(t *testing.T) {
 	git("--git-dir="+dest, "fsck", "--full", "--no-reflogs")
 }
 
+func TestReservedSnapshotID(t *testing.T) {
+	t.Run("uses admitted identity", func(t *testing.T) {
+		root := filepath.Join(t.TempDir(), "root")
+		e := testEngine(t, root, nil)
+		reserved := mustID(t)
+		r, err := e.Create(context.Background(), Request{Source: testRepo(t), Repository: RepositoryIdentity{Provider: "local", ID: mustID(t), DisplayName: "fixture"}, ApplicationVersion: "test", SnapshotID: reserved})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if r.Artifact().SnapshotID != reserved {
+			t.Fatalf("artifact ID=%q want reserved %q", r.Artifact().SnapshotID, reserved)
+		}
+		manifest, err := e.Inspect(context.Background(), r.Artifact().Path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if manifest.SnapshotID != reserved {
+			t.Fatalf("manifest ID=%q want reserved %q", manifest.SnapshotID, reserved)
+		}
+	})
+	t.Run("rejects invalid identity before publication", func(t *testing.T) {
+		root := filepath.Join(t.TempDir(), "root")
+		e := testEngine(t, root, nil)
+		r, err := e.Create(context.Background(), Request{Source: testRepo(t), Repository: RepositoryIdentity{Provider: "local", ID: mustID(t), DisplayName: "fixture"}, ApplicationVersion: "test", SnapshotID: "../snapshot"})
+		if !errors.Is(err, ErrUnsafeRepository) || r.Publication() != NotPublished || r.Artifact() != (ArtifactIdentity{}) {
+			t.Fatalf("invalid reserved identity result=%+v err=%v", r, err)
+		}
+		for _, name := range []string{"staging", "snapshots"} {
+			if _, statErr := os.Lstat(filepath.Join(root, name)); !os.IsNotExist(statErr) {
+				t.Fatalf("invalid identity created %s: %v", name, statErr)
+			}
+		}
+	})
+}
+
 func splitLines(s string) []string {
 	if s == "" {
 		return nil

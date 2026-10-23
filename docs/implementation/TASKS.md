@@ -24,7 +24,7 @@ Read [the runbook](../AGENT-RUNBOOK.md), [MODULES](../MODULES.md), [RECOVERY-SEM
 | I01 | Bounded full-snapshot contract | — | DONE |
 | I02 | Controlled Git and process-tree lifetime | I01 | DONE (Linux runner) |
 | I03 | Offline full snapshot and no-replace bare restore | I01, I02 | DONE (Linux host; other platforms/filesystems pending) |
-| I04 | SQLite durable jobs and reconciliation | I03 | TODO |
+| I04 | SQLite durable jobs and reconciliation | I03 | DONE (Linux host; other OS/filesystems pending) |
 | I05 | Typed revisions and responsive native local workflow | I04 | TODO |
 | I06 | MyGo-native secrets and PAT broker onboarding | I05, I02 | TODO |
 | I07 | GitHub REST pagination and explicit stable selection | I06, I05 | TODO |
@@ -97,9 +97,11 @@ Dependency availability is not edit-disjointness: I09/I14 can be logically avail
 
 ## I04 — SQLite durable jobs and reconciliation
 
-**Purpose:** durable admission and truth independent of UI delivery. **Dependencies:** I03. **Status:** TODO.
+**Purpose:** durable admission and truth independent of UI delivery. **Dependencies:** I03. **Status:** DONE for Linux-host implementation scope after independent review. Darwin/Windows runtime and broader filesystem/crash qualification remain pending; I05 desktop backend integration is not complete. Retained evidence is under `/tmp/opencode/gitvault-i04-evidence/`.
 
-**Allowed:** `internal/{store,app}/**`, `go.{mod,sum}`, `docs/{DATA-MODEL,RECOVERY-SEMANTICS,DEPENDENCIES}.md`, common status paths.
+**Approved scope amendment (2026-10-23):** the user approved adding a caller-reserved snapshot ID so an admitted task can reconcile the exact output after a crash. This adds `internal/backup/engine.go` and `internal/backup/engine_test.go` to the allowed paths; the engine still generates an ID when none is supplied. Acceptance requires the ID to be validated before effects, persisted with the task before work, and reused in the final manifest/path, with a behavioral test. No artifact-format change.
+
+**Allowed:** `internal/{store,app}/**`, approved amendment `internal/backup/{engine.go,engine_test.go}`, `go.{mod,sum}`, `docs/{DATA-MODEL,RECOVERY-SEMANTICS,DEPENDENCIES}.md`, common status paths.
 
 **Steps:**
 1. Review/pin modernc SQLite candidate and transitive/license/platform costs. Embed transactional migrations; refuse future version/changed migration checksum. Test connection foreign keys/busy timeout/actual journal-sync policy, trusted DSN and local app-data DB, one initial open/idle connection.
@@ -109,7 +111,7 @@ Dependency availability is not edit-disjointness: I09/I14 can be logically avail
 
 **Config:** constructor options only; real typed settings arrive I05. **Exclude:** UI, GitHub/cloud, ORM, auto deletion.
 
-**Tests/gates:** `sqlite_integrity`: `TestMigrationsAtomic`, `TestFutureSchemaRejected`, `TestSQLiteConnectionPolicy`; `durable_admission`: `TestAdmissionBeforeWork`, `TestCancelRetainsOwnership`, `TestRestartReconciliation`, `TestTerminalPersistenceWithoutUI`. Commands `go test ./internal/store -count=1`, `go test ./internal/app -count=1`, exact gates and G; seven named passes. Required `TestAdmissionBeforeWork` subcases use two distinct installation/database identities against one root and prove foreign rejection and no independent pin/lease authority. `TestRestartReconciliation` rejects lost/ambiguous bindings without automatic takeover; read-only portability is exercised in I09.
+**Tests/gates:** `sqlite_integrity`: `TestMigrationsAtomic`, `TestFutureSchemaRejected`, `TestSQLiteConnectionPolicy`; `durable_admission`: `TestAdmissionBeforeWork`, `TestCancelRetainsOwnership`, `TestRestartReconciliation`, `TestTerminalPersistenceWithoutUI`; `reserved_snapshot_identity`: `TestReservedSnapshotID`. Commands `go test ./internal/store -count=1`, `go test ./internal/app -count=1`, `go test ./internal/backup -run '^TestReservedSnapshotID$' -count=1`, exact gates and G; eight named passes. Required `TestAdmissionBeforeWork` subcases use two independent installation/database identities against one root and prove foreign/canonical-app-data rejection under the root lock and no access to the other database's pin/lease records. `TestRestartReconciliation` recovers the exact admitted snapshot ID, rejects lost/ambiguous bindings without automatic takeover, preserves unknown outputs for inspection, and never deletes unowned staging. It also reports `deleting`/`deleted` rows as unresolved and leaves startup admission closed; I04 does not create deletion authorization or execute effects. Supporting `TestReconciliationDirectoryScanIsBounded` proves directory inventory has a total entry budget. Read-only portability is exercised in I09.
 
 **Failure/cancel/restart:** reap before ownership release; reconcile original identity before retry; unusable DB disables managed jobs/deletion but not standalone restore. **Stop:** unreviewed driver, destructive migrations, deleting/published ambiguity. **Platform evidence:** native temporary SQLite crash/reopen, verified pragma results and process ownership per claimed OS.
 
