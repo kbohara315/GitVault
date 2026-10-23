@@ -35,10 +35,10 @@ go tool mygo dev
 ```sh
 go vet ./...
 go build ./...
-go tool mygo build
+make build
 ```
 
-`go build` checks compilation. `go tool mygo build` packages the app into `build/`. On Unix, `make dev`, `make check`, and `make build` are optional shortcuts. Use the Go commands directly on Windows.
+`go build` checks compilation. On Unix, `make build` (or `sh scripts/build.sh`) packages the app into `build/` with a safe `022` umask. This matters: group-writable executables are deliberately rejected by the Git credential broker. Do not bypass that check or change backup-folder permissions to fix it. To pass build options, use `sh scripts/build.sh -platform linux/amd64`. On Windows, use `go tool mygo build` directly.
 
 ## Repository layout
 

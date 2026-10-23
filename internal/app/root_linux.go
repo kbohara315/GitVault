@@ -358,6 +358,20 @@ func canonicalManagedRoot(path string) (string, string, error) {
 	return path, fmt.Sprintf("dev:%d:ino:%d", uint64(st.Dev), st.Ino), nil
 }
 
+// createPrivateManagedRoot creates only the selected directory and never
+// changes permissions on an existing directory or its ancestors. Binding
+// performs the full ownership and ancestor trust checks afterwards.
+func createPrivateManagedRoot(path string) error {
+	if !filepath.IsAbs(path) || filepath.Clean(path) != path {
+		return errors.New("private backup folder path must be canonical and absolute")
+	}
+	err := os.Mkdir(path, 0700)
+	if errors.Is(err, os.ErrExist) {
+		return nil
+	}
+	return err
+}
+
 func managedPathsOverlap(a, b string) bool {
 	a, b = filepath.Clean(a), filepath.Clean(b)
 	for _, pair := range [][2]string{{a, b}, {b, a}} {

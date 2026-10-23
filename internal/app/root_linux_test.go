@@ -14,6 +14,31 @@ import (
 	"gitvault/internal/store"
 )
 
+func TestCreatePrivateManagedRootCreatesOnlyMissingDirectory(t *testing.T) {
+	parent := t.TempDir()
+	if err := os.Chmod(parent, 0700); err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(parent, "GitVault-Backups")
+	if err := createPrivateManagedRoot(root); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(root)
+	if err != nil || info.Mode().Perm() != 0700 {
+		t.Fatalf("created private root mode=%v err=%v", info, err)
+	}
+	if err = os.Chmod(root, 0770); err != nil {
+		t.Fatal(err)
+	}
+	if err = createPrivateManagedRoot(root); err != nil {
+		t.Fatal(err)
+	}
+	info, err = os.Stat(root)
+	if err != nil || info.Mode().Perm() != 0770 {
+		t.Fatalf("existing root permissions were changed: mode=%v err=%v", info, err)
+	}
+}
+
 func TestBindManagedRootRejectsApplicationDataOverlapWithoutCreatingLocks(t *testing.T) {
 	ctx := context.Background()
 	base := t.TempDir()

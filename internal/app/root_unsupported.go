@@ -29,6 +29,7 @@ func validateManagedRootLocked(context.Context, *store.Store, string, string, ma
 func canonicalManagedRoot(string) (string, string, error) {
 	return "", "", ErrManagedPlatformUnsupported
 }
+func createPrivateManagedRoot(string) error { return ErrManagedPlatformUnsupported }
 func readManagedRootMarker(string) (managedRootMarker, error) {
 	return managedRootMarker{}, ErrManagedPlatformUnsupported
 }

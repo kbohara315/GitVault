@@ -37,5 +37,6 @@ func CopyView(s ViewState) ViewState {
 	s.Snapshots = append([]SnapshotView(nil), s.Snapshots...)
 	s.Remote = append([]SnapshotView(nil), s.Remote...)
 	s.Tasks = append([]TaskView(nil), s.Tasks...)
+	s.Logs = append([]LogEntry(nil), s.Logs...)
 	return s
 }

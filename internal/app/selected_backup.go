@@ -129,6 +129,7 @@ func containsSelectionID(values []string, target string) bool {
 func (w *LocalWorkflow) launchGitHubRun(run store.Run) {
 	w.activeRunID = run.ID
 	w.lastRunID = run.ID
+	w.addLog("info", "Selected GitHub backup run started for "+strconv.Itoa(len(run.Intent.RepositoryIDs))+" selected repositories.")
 	w.mutate(func(s *ViewState) {
 		s.Busy = true
 		s.CanCancel = true
@@ -178,12 +179,17 @@ func (w *LocalWorkflow) executeGitHubRun(ctx context.Context, run store.Run, sna
 		return errors.New("GitHub discovery client unavailable")
 	}
 	result, discoveryErr := discoverer.DiscoverBytes(ctx, token)
+	// A failed /user request has no account identity. Preserve its typed cause
+	// rather than replacing authentication/network failures with account mismatch.
+	if result.User.ID <= 0 && discoveryErr != nil {
+		return discoveryErr
+	}
 	if result.User.ID <= 0 || strconv.FormatInt(result.User.ID, 10) != run.Intent.AccountID {
-		return errors.New("authenticated GitHub account does not match the admitted account")
+		return errGitHubAccountMismatch
 	}
 	completeInventory := result.Complete && discoveryErr == nil
 	if err = w.store.ReconcileGitHubInventory(ctx, inventoryAccount(result.User), inventoryRepositories(result.Repositories), completeInventory); err != nil {
-		return errors.New("fresh GitHub inventory could not be saved")
+		return errGitHubInventorySave
 	}
 	byID := make(map[string]github.Repository, len(result.Repositories))
 	for _, repository := range result.Repositories {
@@ -229,9 +235,9 @@ func (w *LocalWorkflow) executeGitHubRun(ctx context.Context, run store.Run, sna
 				}
 				repository, found := byID[task.RepositoryID]
 				if !found {
-					cause := errors.New("selected repository is absent from the fresh inventory")
+					cause := errGitHubRepositoryMissing
 					if !completeInventory {
-						cause = errors.New("fresh inventory is incomplete for this selected repository")
+						cause = errGitHubInventoryIncomplete
 					}
 					if recordErr := complete(task, failedBackupResult(cause), cause); recordErr != nil {
 						errMu.Lock()
@@ -248,6 +254,7 @@ func (w *LocalWorkflow) executeGitHubRun(ctx context.Context, run store.Run, sna
 					}
 					continue
 				}
+				w.addLog("info", "GitHub repository acquisition started.")
 				mirror, acquireErr := acquirer.AcquireGitHub(ctx, task.RepositoryID, repository.CloneURL, token)
 				if acquireErr != nil {
 					if recordErr := complete(task, failedBackupResult(acquireErr), acquireErr); recordErr != nil {
@@ -265,6 +272,7 @@ func (w *LocalWorkflow) executeGitHubRun(ctx context.Context, run store.Run, sna
 					}
 					continue
 				}
+				w.addLog("info", "Acquisition completed; verified snapshot creation started.")
 				snapshotResult, createErr := snapshot.Create(ctx, backup.Request{Source: mirror, Repository: backup.RepositoryIdentity{Provider: "github", ID: task.RepositoryID, DisplayName: repository.FullName}, ApplicationVersion: "0.1.0", ManagedGitHubMirror: true, SnapshotID: task.OperationID})
 				if recordErr := complete(task, snapshotResult, createErr); recordErr != nil {
 					errMu.Lock()

@@ -19,6 +19,7 @@ const (
 // the credential text: native queries receive a same-length mask instead.
 type secretDraft struct {
 	value             []byte
+	readClipboard     func() string
 	selection         ui.TextInputRange
 	selectionReversed bool
 	selectionAnchor   int
@@ -162,11 +163,21 @@ func (d *secretDraft) HandleInput(ev ui.InputEvent) bool {
 			d.deleteSelectionOrNext(false)
 			return true
 		case "paste", "pasteAndMatchStyle":
-			return false
+			if d.readClipboard != nil {
+				clipboard := strings.TrimSpace(d.readClipboard())
+				d.ReplaceText(nil, clipboard)
+			}
+			return true
 		}
 	case ui.InputKeyDown:
 		shift := ev.Mods&ui.Shift != 0
 		switch {
+		case ev.Key == ui.KeyV && ev.Mods&(ui.Ctrl|ui.Cmd) != 0:
+			if d.readClipboard != nil {
+				clipboard := strings.TrimSpace(d.readClipboard())
+				d.ReplaceText(nil, clipboard)
+			}
+			return true
 		case ev.Key == ui.KeyHome || ev.Key == ui.KeyLeft && ev.Mods&ui.Cmd != 0:
 			d.moveCaret(0, shift)
 			return true
@@ -265,6 +276,14 @@ func (d *secretDraft) displayRange() (int, int) {
 func (d *secretDraft) displayLayout(start, end int) *ui.TextLayout {
 	mask := strings.Repeat("•", end-start)
 	return ui.ShapeText(mask, ui.Font{Size: secretInputFontSize}, 0)
+}
+
+func (d *secretDraft) displayCaret() (float32, float32) {
+	start, end := d.displayRange()
+	layout := d.displayLayout(start, end)
+	caret := d.caret()
+	position := layout.Caret(caret - start)
+	return position.X, position.H
 }
 
 func (d *secretDraft) clampRange(r ui.TextInputRange) (int, int) {

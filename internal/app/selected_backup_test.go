@@ -30,6 +30,45 @@ import (
 
 const selectedCredential = "synthetic-GV-selected-pipeline-token"
 
+func TestSelectedBackupFailureDiagnostics(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		credentialErr error
+		discoveryErr  error
+		code          string
+	}{
+		{"credential denied", secrets.ErrDenied, nil, "engine_failed_credential_denied"},
+		{"credential missing", secrets.ErrNotFound, nil, "engine_failed_credential_missing"},
+		{"authentication", nil, &github.Error{Kind: github.Authentication, Status: 401}, "engine_failed_github_authentication"},
+		{"network", nil, &github.Error{Kind: github.Transport}, "engine_failed_github_transport"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newAppFixture(t)
+			repo := discoveredRepo(201, 101, "alice", "User", "demo")
+			credentials := newFakeCredentialStore()
+			if tc.credentialErr != nil {
+				credentials.read = func(context.Context, secrets.Handle) ([]byte, error) { return nil, tc.credentialErr }
+			}
+			discovery := &discoveryScript{errors: []error{tc.discoveryErr}}
+			_, workflow, _, revision := configureSelectedWorkflow(t, f, []github.Repository{repo}, []string{"github:201"}, selectedTestEngine(t, f, nil), discovery, credentials)
+			if err := workflow.Submit(Command{Kind: BackupSelected, ExpectedRevision: revision}); err != nil {
+				t.Fatal(err)
+			}
+			state := waitDiscoveryState(t, workflow, func(s ViewState) bool { return !s.Busy && len(s.Tasks) == 1 && s.Tasks[0].Stage == "failed" })
+			tasks, err := f.store.ListTasks(context.Background(), state.Tasks[0].RunID, 10)
+			if err != nil || len(tasks) != 1 || tasks[0].ErrorCode != tc.code {
+				t.Fatalf("failure category lost: tasks=%+v err=%v; want %s", tasks, err, tc.code)
+			}
+			if tc.credentialErr != nil && discovery.calls() != 0 {
+				t.Fatal("discovery ran after credential failure")
+			}
+			if strings.Contains(fmt.Sprint(state.Logs), selectedCredential) {
+				t.Fatal("credential leaked to logs")
+			}
+		})
+	}
+}
+
 // TestGitHubCredentialHelperFixture is the private-helper entry point for real
 // Git subprocesses launched by this test binary. It is inert in normal test runs.
 func TestGitHubCredentialHelperFixture(t *testing.T) {

@@ -18,4 +18,4 @@ fmt:
 	gofmt -w main.go internal cmd
 
 build:
-	go tool mygo build
+	sh scripts/build.sh

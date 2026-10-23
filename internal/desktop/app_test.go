@@ -31,6 +31,93 @@ func TestInitialView(t *testing.T) {
 	}
 }
 
+func TestLogsSidebarCopiesAllEntries(t *testing.T) {
+	state := app.ViewState{Connected: true, Logs: []app.LogEntry{{At: time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC), Level: "error", Message: "safe failure detail"}}}
+	tt := ui.NewTester(NewWithBackend(&testBackend{state: state}).View, 1000, 800)
+	if err := tt.Click("Logs"); err != nil {
+		t.Fatal(err)
+	}
+	if !tt.HasText("safe failure detail") || !tt.HasText("Copy all logs") {
+		t.Fatalf("logs view not rendered: %q", tt.Texts())
+	}
+	if err := tt.Click("Copy all logs"); err != nil {
+		t.Fatal(err)
+	}
+	if got := tt.Clipboard(); !strings.Contains(got, "[ERROR] safe failure detail") {
+		t.Fatalf("unexpected clipboard content %q", got)
+	}
+}
+
+func TestGuidedSetupNavigationDoesNotStartWork(t *testing.T) {
+	for _, tc := range []struct {
+		name, action string
+		state        app.ViewState
+		page         int
+	}{
+		{"folder", "Set up backup folder", app.ViewState{Connected: true}, 4},
+		{"selection", "Choose GitHub repositories", app.ViewState{Connected: true, Settings: app.SettingsDraft{Root: "/synthetic-vault"}}, 1},
+		{"review", "Review and start backup", app.ViewState{Connected: true, CredentialConfigured: true, SelectedRepositoryCount: 2, Settings: app.SettingsDraft{Root: "/synthetic-vault"}}, 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			backend := &testBackend{state: tc.state}
+			a := NewWithBackend(backend)
+			tester := ui.NewTester(a.View, 800, 560)
+			if err := tester.Click(tc.action); err != nil {
+				t.Fatal(err)
+			}
+			if a.selected != tc.page || len(backend.commands) != 0 {
+				t.Fatalf("navigation submitted work or opened wrong page: page=%d commands=%v", a.selected, backend.commands)
+			}
+		})
+	}
+}
+
+func TestConfiguredConnectionUsesProgressiveDisclosure(t *testing.T) {
+	b := &testBackend{state: app.ViewState{Connected: true, CanManageCredential: true, CredentialConfigured: true, SelectedRepositoryCount: 2}}
+	a := NewWithBackend(b)
+	a.selected = 1
+	tester := ui.NewTester(a.View, 1000, 800)
+	if tester.HasText("GitHub personal access token") {
+		t.Fatal("configured connection unnecessarily exposes token editor")
+	}
+	if err := tester.Click("Manage GitHub connection"); err != nil {
+		t.Fatal(err)
+	}
+	if err := tester.Click("GitHub personal access token"); err != nil {
+		t.Fatal(err)
+	}
+	tester.Type("synthetic-sensitive-draft")
+	if err := tester.Click("Manage GitHub connection"); err != nil {
+		t.Fatal(err)
+	}
+	if !a.githubToken.Empty() {
+		t.Fatal("closing connection editor retained token draft")
+	}
+	if err := tester.Click("Continue to backup"); err != nil {
+		t.Fatal(err)
+	}
+	if a.selected != 2 || len(b.commands) != 0 {
+		t.Fatal("continue should navigate without starting a backup")
+	}
+}
+
+func TestLogsNewestFirstCopiesChronologicalHistory(t *testing.T) {
+	logs := []app.LogEntry{{Level: "error", Message: "older failure"}, {Level: "info", Message: "latest success"}}
+	a := NewWithBackend(&testBackend{state: app.ViewState{Logs: logs}})
+	a.selected = 5
+	tester := ui.NewTester(a.View, 800, 560)
+	text := strings.Join(tester.Texts(), "\n")
+	if strings.Index(text, "latest success") > strings.Index(text, "older failure") {
+		t.Fatal("old failures hide latest result")
+	}
+	if err := tester.Click("Copy all logs"); err != nil {
+		t.Fatal(err)
+	}
+	if tester.Clipboard() != formatLogs(logs) {
+		t.Fatal("copy reordered or omitted history")
+	}
+}
+
 type testBackend struct {
 	state    app.ViewState
 	commands []app.Command
@@ -104,6 +191,29 @@ func TestNativeRootBindingIsExplicit(t *testing.T) {
 	got := b.commands[0]
 	if got.Kind != app.BindRoot || got.Root != "/vault" || got.ExpectedRevision != 11 {
 		t.Fatalf("wrong bind intent: %+v", got)
+	}
+}
+
+func TestPrivateBackupFolderActionIsExplicit(t *testing.T) {
+	b := &testBackend{state: app.ViewState{Connected: true, Revision: 12, CanBindRoot: true}}
+	a := NewWithBackend(b)
+	tt := ui.NewTester(a.View, 1000, 900)
+	if err := tt.Click("Backups"); err != nil {
+		t.Fatal(err)
+	}
+	if err := tt.Click("Create and bind private backup folder"); err != nil {
+		t.Fatal(err)
+	}
+	if len(b.commands) != 1 {
+		t.Fatalf("commands: %+v", b.commands)
+	}
+	command := b.commands[0]
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if command.Kind != app.BindRoot || !command.CreateRoot || command.Root != filepath.Join(home, "GitVault-Backups") {
+		t.Fatalf("private-folder action submitted wrong bind: %+v", command)
 	}
 }
 
@@ -190,6 +300,33 @@ func TestNativeCredentialOnboardingControls(t *testing.T) {
 			t.Fatal("cleared credential draft bytes were not overwritten")
 		}
 	}
+}
+
+func TestNativeCredentialPasteIsMasked(t *testing.T) {
+	b := &testBackend{state: app.ViewState{Connected: true, Revision: 24, CanManageCredential: true}}
+	a := NewWithBackend(b)
+	tt := ui.NewTester(a.View, 1000, 900)
+	if err := tt.Click("Repositories"); err != nil {
+		t.Fatal(err)
+	}
+	if err := tt.Click("GitHub personal access token"); err != nil {
+		t.Fatal(err)
+	}
+	const pasted = "synthetic-GV-PAT-pasted"
+	tt.SetClipboard(pasted)
+	tt.Key(ui.Ctrl, ui.KeyV)
+	if !bytes.Equal(a.githubToken.value, []byte(pasted)) {
+		t.Fatal("Ctrl+V did not paste into the secure token draft")
+	}
+	if strings.Contains(strings.Join(tt.Texts(), "\n"), pasted) || !strings.Contains(strings.Join(tt.Texts(), "\n"), strings.Repeat("•", len(pasted))) {
+		t.Fatal("pasted token was not kept masked")
+	}
+	tt.SetClipboard("-plain")
+	tt.Key(ui.Ctrl|ui.Shift, ui.KeyV)
+	if !bytes.Equal(a.githubToken.value, []byte(pasted+"-plain")) {
+		t.Fatal("Ctrl+Shift+V did not paste into the secure token draft")
+	}
+	a.ClearSensitiveDrafts()
 }
 
 func TestNativeGitHubDiscoveryFiltersAndExplicitSelection(t *testing.T) {

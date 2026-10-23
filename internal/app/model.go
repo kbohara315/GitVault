@@ -41,7 +41,7 @@ type Command struct {
 	ExpectedRevision                                                         int64
 	Kind                                                                     CommandKind
 	Source, Root, SnapshotID, SnapshotPath, Destination, RepositoryID, RunID string
-	Selected, Confirm                                                        bool
+	Selected, Confirm, CreateRoot                                            bool
 	Secret                                                                   []byte
 	Filters                                                                  config.GitHubFilters
 	Settings                                                                 SettingsDraft
@@ -79,6 +79,12 @@ type TaskView struct {
 	Bytes, TotalBytes         int64
 }
 
+type LogEntry struct {
+	At      time.Time
+	Level   string
+	Message string
+}
+
 type ViewState struct {
 	Revision                                                                 int64
 	Busy, CanCancel, CanBindRoot, CanStartLocal, CanStartSelected, Connected bool
@@ -93,6 +99,7 @@ type ViewState struct {
 	Snapshots                                                                []SnapshotView
 	Remote                                                                   []SnapshotView
 	Tasks                                                                    []TaskView
+	Logs                                                                     []LogEntry
 	RetentionPreviewID, RetentionSummary, CatchUpOffer                       string
 	SelectedRepositoryCount                                                  int
 }

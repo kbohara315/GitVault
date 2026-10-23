@@ -2,8 +2,10 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -52,8 +54,10 @@ type LocalWorkflow struct {
 	done        chan struct{}
 	discoveryWG sync.WaitGroup
 
-	mu    sync.RWMutex
-	state ViewState
+	mu      sync.RWMutex
+	state   ViewState
+	logMu   sync.Mutex
+	logPath string
 
 	root                     store.RootBinding
 	hasRoot                  bool
@@ -100,8 +104,13 @@ func newLocalWorkflow(parent context.Context, s *store.Store, build LocalEngineB
 		store: s, build: build, credentials: credentials, discovery: discovery, ctx: ctx, cancel: cancel,
 		events: NewEvents(capacity), commands: make(chan Command, queueCapacity),
 		progress: make(chan backup.ProgressEvent, capacity), finished: make(chan workflowCompletion, 1), discoveries: make(chan discoveryCompletion, 1),
-		done:  make(chan struct{}),
-		state: ViewState{Connected: true, Revision: revision.ID(), Settings: settingsDraft(values), CanManageCredential: credentials != nil, Status: "Choose an existing local folder and bind it before starting a backup."},
+		done:    make(chan struct{}),
+		logPath: filepath.Join(s.Identity().DataDir, "operational-logs.json"),
+		state:   ViewState{Connected: true, Revision: revision.ID(), Settings: settingsDraft(values), CanManageCredential: credentials != nil, Status: "Choose an existing local folder and bind it before starting a backup."},
+	}
+	w.state.Logs = loadOperationalLogs(w.logPath)
+	if runs, queryErr := s.QueryRuns(parent, 1); queryErr == nil && len(runs) > 0 {
+		w.lastRunID = runs[0].ID
 	}
 	if err = w.initializeExistingRoot(parent, values); err != nil {
 		cancel()
@@ -260,6 +269,9 @@ func (w *LocalWorkflow) Submit(command Command) error {
 		return ErrWorkflowClosed
 	}
 	credentialCommand := command.Kind == SaveToken || command.Kind == RemoveToken
+	if command.CreateRoot && command.Kind != BindRoot {
+		return errors.New("private folder creation is only valid when binding a backup folder")
+	}
 	if (w.state.CredentialBusy || w.credentials != nil && w.credentials.Pending() || credentialCommand && w.state.Busy) && command.Kind != Refresh && command.Kind != Cancel {
 		clear(command.Secret)
 		return ErrCredentialOperationPending
@@ -402,6 +414,12 @@ func (w *LocalWorkflow) bindRoot(command Command) {
 		w.setError("Backup folder must be an existing clean absolute local directory.")
 		return
 	}
+	if command.CreateRoot {
+		if err := createPrivateManagedRoot(rootPath); err != nil {
+			w.setError("GitVault could not create the private backup folder. Check that its parent folder is available.")
+			return
+		}
+	}
 	values := current.Config()
 	values.Backup.Root = &rootPath
 	binding, revision, bindErr := BindManagedRootWithConfig(w.ctx, w.store, rootPath, current.ID(), values)
@@ -509,6 +527,7 @@ func (w *LocalWorkflow) startLocal(command Command) {
 	w.activeRunID = run.ID
 	w.lastRunID = run.ID
 	w.activeRepoID = run.Intent.RepositoryIDs[0]
+	w.addLog("info", "Local backup run started.")
 	w.mutate(func(s *ViewState) {
 		s.Busy = true
 		s.CanCancel = true
@@ -550,6 +569,12 @@ func (w *LocalWorkflow) handleProgress(progress backup.ProgressEvent) {
 		return
 	}
 	w.mutate(func(s *ViewState) {
+		if len(s.Logs) == 0 || s.Logs[len(s.Logs)-1].Message != "Backup stage: "+progress.Stage+"." {
+			s.Logs = append(s.Logs, LogEntry{At: time.Now().UTC(), Level: "info", Message: "Backup stage: " + progress.Stage + "."})
+			if len(s.Logs) > maxViewLogs {
+				s.Logs = append([]LogEntry(nil), s.Logs[len(s.Logs)-maxViewLogs:]...)
+			}
+		}
 		s.Status = "Backup: " + progress.Stage
 		matched := false
 		for i := range s.Tasks {
@@ -572,6 +597,7 @@ func (w *LocalWorkflow) handleCompletion(completion workflowCompletion) {
 	w.activeRunID = ""
 	w.activeRepoID = ""
 	if completion.err != nil {
+		w.addLog("error", "Run could not be finalized; reconciliation is required. No automatic retry was started.")
 		w.ready = false
 		w.mutate(func(s *ViewState) {
 			s.Busy = true // terminal facts were not confirmed; fail admission closed.
@@ -584,8 +610,17 @@ func (w *LocalWorkflow) handleCompletion(completion workflowCompletion) {
 		return
 	}
 	w.lastRunID = completion.run.ID
+	if completion.run.State == "failed" || completion.run.State == "partial" {
+		w.addLog("error", "Backup run finished with failures. Open Backups for per-repository outcomes; no automatic retry was started.")
+	} else {
+		w.addLog("info", "Backup run finished: "+completion.run.State+".")
+	}
 	if completion.run.State == "interrupted" {
 		w.ready = false
+	}
+	backupLabel := "Local backup"
+	if completion.run.Intent.Kind == "github_backup" {
+		backupLabel = "GitHub backup"
 	}
 	w.mutate(func(s *ViewState) {
 		s.Busy = false
@@ -594,16 +629,16 @@ func (w *LocalWorkflow) handleCompletion(completion workflowCompletion) {
 		s.Error = ""
 		switch completion.run.State {
 		case "succeeded":
-			s.Status = "Local backup completed and its terminal result is durable."
+			s.Status = backupLabel + " completed and its terminal result is durable."
 		case "cancelled":
-			s.Status = "Local backup cancelled; any published snapshot remains retained."
+			s.Status = backupLabel + " cancelled; any published snapshot remains retained."
 		case "interrupted":
-			s.Status = "Local backup was interrupted and needs reconciliation."
+			s.Status = backupLabel + " was interrupted and needs reconciliation."
 			s.Error = "No retry was started. Inspect the original run during startup reconciliation."
 		case "partial":
 			s.Status = "The run completed with partial results."
 		default:
-			s.Status = "Local backup failed."
+			s.Status = backupLabel + " failed."
 		}
 	})
 	w.refreshDurableView(w.ctx)
@@ -663,7 +698,16 @@ func (w *LocalWorkflow) refreshDurableView(ctx context.Context) {
 					continue
 				}
 				path := filepath.Join(w.root.Path, filepath.FromSlash(row.RelativePath))
-				snapshots = append(snapshots, SnapshotView{ID: row.ID, Repository: row.RepositoryID, Path: path, Verification: verificationLabel(row.Verification), CloudStatus: "not requested", CreatedAt: row.CreatedAt, LocalReady: row.State == "ready", Pinned: pinned[row.ID]})
+				name := row.RepositoryID
+				if row.Provider == "github" {
+					for _, repository := range repositories {
+						if repository.ID == row.RepositoryID {
+							name = repository.FullName
+							break
+						}
+					}
+				}
+				snapshots = append(snapshots, SnapshotView{ID: row.ID, Repository: name, Path: path, Verification: verificationLabel(row.Verification), CloudStatus: "not requested", CreatedAt: row.CreatedAt, LocalReady: row.State == "ready", Pinned: pinned[row.ID]})
 			}
 		}
 	}
@@ -698,7 +742,14 @@ func (w *LocalWorkflow) refreshDurableView(ctx context.Context) {
 					}
 					canRetry = runErr == nil && !w.Snapshot().Busy && retryableGitHubTask(run.State, task) && selected[repositoryID] && available[task.RepositoryID]
 				}
-				views = append(views, TaskView{Repository: repository, RepositoryID: repositoryID, RunID: w.lastRunID, Stage: task.Stage, Detail: detail, CanRetry: canRetry})
+				viewDetail := detail
+				if task.ErrorCode != "" {
+					viewDetail = safeFailureDescription(detail)
+				}
+				views = append(views, TaskView{Repository: repository, RepositoryID: repositoryID, RunID: w.lastRunID, Stage: task.Stage, Detail: viewDetail, CanRetry: canRetry})
+				if task.Outcome == "failed" {
+					w.addLog("error", "Repository task "+repository+" failed at "+task.Stage+" ("+safeFailureDescription(detail)+").")
+				}
 			}
 			if len(views) > 0 {
 				w.mutate(func(s *ViewState) { s.Tasks = views })
@@ -708,11 +759,37 @@ func (w *LocalWorkflow) refreshDurableView(ctx context.Context) {
 	w.recomputeControls()
 }
 
+func safeFailureDescription(code string) string {
+	if description := classifiedFailureDescription(code); description != "" {
+		return description
+	}
+	switch code {
+	case "engine_failed_git_unavailable":
+		return "Git could not be started or was unavailable"
+	case "engine_failed_git_unsupported":
+		return "Git process ownership or operation is unsupported"
+	case "engine_failed_git_output_limit":
+		return "Git output exceeded the configured safety limit"
+	case "engine_failed_unsafe_repository":
+		return "repository failed GitVault's safety checks"
+	case "engine_failed_git_transport_denied":
+		return "Git transport was denied by policy"
+	case "operation_timeout":
+		return "operation timed out"
+	case "engine_failed":
+		return "no specific diagnostic was retained; open Logs and explicitly retry to collect a new result"
+	}
+	if strings.HasPrefix(code, "engine_failed_git_exit_") {
+		return "controlled Git command exited with " + strings.TrimPrefix(code, "engine_failed_git_exit_") + " (raw output suppressed)"
+	}
+	return code
+}
+
 func retryableGitHubTask(runState string, task store.Task) bool {
 	if (runState != "failed" && runState != "partial" && runState != "cancelled") || task.Provider != "github" || task.Stage != "failed" || task.Outcome != "failed" || task.PublicationState != string(backup.NotPublished) || task.ArtifactID != "" || task.ArtifactPath != "" {
 		return false
 	}
-	return task.ErrorCode == "engine_failed" || task.ErrorCode == "operation_timeout"
+	return strings.HasPrefix(task.ErrorCode, "engine_failed") || task.ErrorCode == "operation_timeout"
 }
 
 func verificationLabel(v store.Verification) string {
@@ -764,6 +841,52 @@ func (w *LocalWorkflow) mutate(change func(*ViewState)) {
 	w.state = CopyView(state)
 	w.mu.Unlock()
 	w.events.Publish(state)
+}
+
+const maxViewLogs = 500
+
+func (w *LocalWorkflow) addLog(level, message string) {
+	w.logMu.Lock()
+	defer w.logMu.Unlock()
+	var added LogEntry
+	w.mutate(func(s *ViewState) {
+		if len(s.Logs) > 0 && s.Logs[len(s.Logs)-1].Level == level && s.Logs[len(s.Logs)-1].Message == message {
+			return
+		}
+		added = LogEntry{At: time.Now().UTC(), Level: level, Message: message}
+		s.Logs = append(s.Logs, added)
+		if len(s.Logs) > maxViewLogs {
+			s.Logs = append([]LogEntry(nil), s.Logs[len(s.Logs)-maxViewLogs:]...)
+		}
+	})
+	if added.Message == "" {
+		return
+	}
+	state := w.Snapshot()
+	body, err := json.Marshal(state.Logs)
+	if err != nil {
+		return
+	}
+	tmp := w.logPath + ".tmp"
+	if os.WriteFile(tmp, body, 0600) == nil {
+		_ = os.Rename(tmp, w.logPath)
+		_ = os.Chmod(w.logPath, 0600)
+	}
+}
+
+func loadOperationalLogs(path string) []LogEntry {
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var logs []LogEntry
+	if json.Unmarshal(body, &logs) != nil {
+		return nil
+	}
+	if len(logs) > maxViewLogs {
+		logs = logs[len(logs)-maxViewLogs:]
+	}
+	return logs
 }
 
 // Close stops command admission, cancels active work, waits for the command

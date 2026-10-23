@@ -787,12 +787,45 @@ func outcomeForResult(result backup.Result, err error) (outcome, code string) {
 		return "failed", "operation_timeout"
 	}
 	if err != nil || result.Outcome() == backup.OutcomeFailed {
-		return "failed", "engine_failed"
+		return "failed", safeEngineErrorCode(err)
 	}
 	if result.Outcome() == backup.OutcomeInterrupted {
 		return "interrupted", "owner_lost"
 	}
 	return "succeeded", ""
+}
+
+// safeEngineErrorCode exposes only allowlisted machine facts. Never persist
+// error.Error(), process stderr, paths, URLs, or repository-controlled text.
+func safeEngineErrorCode(err error) string {
+	if code := classifiedFailureCode(err); code != "" {
+		return code
+	}
+	if err == nil {
+		return "engine_failed"
+	}
+	for _, candidate := range []struct {
+		err  error
+		code string
+	}{
+		{backup.ErrGitUnavailable, "engine_failed_git_unavailable"},
+		{backup.ErrGitUnsupported, "engine_failed_git_unsupported"},
+		{backup.ErrGitOutputLimit, "engine_failed_git_output_limit"},
+		{backup.ErrUnsafeRepository, "engine_failed_unsafe_repository"},
+		{backup.ErrGitTransportDenied, "engine_failed_git_transport_denied"},
+	} {
+		if errors.Is(err, candidate.err) {
+			return candidate.code
+		}
+	}
+	var gitErr *backup.GitCommandError
+	if errors.As(err, &gitErr) {
+		if gitErr.ExitCode >= 0 && gitErr.ExitCode <= 255 {
+			return fmt.Sprintf("engine_failed_git_exit_%d", gitErr.ExitCode)
+		}
+		return "engine_failed_git_process"
+	}
+	return "engine_failed"
 }
 
 func runOutcomeForTask(outcome string) string {
