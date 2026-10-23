@@ -33,8 +33,6 @@ func (e *Events) Publish(state ViewState) {
 }
 
 func CopyView(s ViewState) ViewState {
-	s.Settings.CloudAccessKey = ""
-	s.Settings.CloudSecretKey = ""
 	s.Repositories = append([]RepositoryView(nil), s.Repositories...)
 	s.Snapshots = append([]SnapshotView(nil), s.Snapshots...)
 	s.Remote = append([]SnapshotView(nil), s.Remote...)

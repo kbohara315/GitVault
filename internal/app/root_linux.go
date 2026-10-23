@@ -14,6 +14,7 @@ import (
 	"syscall"
 
 	"gitvault/internal/backup"
+	"gitvault/internal/config"
 	"gitvault/internal/store"
 	"golang.org/x/sys/unix"
 )
@@ -34,78 +35,113 @@ type managedRootMarker struct {
 	Generation      int64  `json:"generation"`
 }
 
-// BindManagedRoot explicitly binds a trusted local directory to this store.
-// Existing markers are never adopted by another database or installation.
+// BindManagedRoot explicitly binds a trusted local directory and publishes the
+// matching immutable configuration revision. Existing markers are never
+// adopted by another database or installation.
 func BindManagedRoot(ctx context.Context, s *store.Store, rootPath string) (store.RootBinding, error) {
 	if s == nil {
 		return store.RootBinding{}, errors.New("store required")
 	}
-	root, fsID, err := canonicalManagedRoot(rootPath)
+	current, err := s.CurrentConfig(ctx)
 	if err != nil {
 		return store.RootBinding{}, err
 	}
+	values := current.Config()
+	values.Backup.Root = &rootPath
+	binding, _, err := BindManagedRootWithConfig(ctx, s, rootPath, current.ID(), values)
+	return binding, err
+}
+
+// BindManagedRootWithConfig validates a user-selected directory, then changes
+// the root marker, managed-root authority, revision projections, and settings
+// head as one explicit rebind operation. A known pre-commit failure removes
+// only the marker published by this attempt. An uncertain SQLite commit keeps
+// that marker for reconciliation; callers must fail managed admission closed.
+func BindManagedRootWithConfig(ctx context.Context, s *store.Store, rootPath string, expectedRevision int64, values config.Config) (store.RootBinding, config.Revision, error) {
+	if s == nil {
+		return store.RootBinding{}, config.Revision{}, errors.New("store required")
+	}
+	values, err := config.Normalize(values)
+	if err != nil {
+		return store.RootBinding{}, config.Revision{}, err
+	}
+	if values.Backup.Root == nil || *values.Backup.Root != rootPath {
+		return store.RootBinding{}, config.Revision{}, errors.New("configuration root must match the selected root")
+	}
+	root, fsID, err := canonicalManagedRoot(rootPath)
+	if err != nil {
+		return store.RootBinding{}, config.Revision{}, err
+	}
+	if managedPathsOverlap(root, s.Identity().DataDir) {
+		return store.RootBinding{}, config.Revision{}, errors.New("managed backup folder must not overlap application data")
+	}
 	releaseRun, err := lockCoordinatorRun(ctx, root)
 	if err != nil {
-		return store.RootBinding{}, err
+		return store.RootBinding{}, config.Revision{}, err
 	}
 	defer releaseRun()
 	releaseRoot, err := lockManagedRoot(ctx, root)
 	if err != nil {
-		return store.RootBinding{}, err
+		return store.RootBinding{}, config.Revision{}, err
 	}
 	defer releaseRoot()
 	lockedRoot, lockedFSID, err := canonicalManagedRoot(root)
 	if err != nil || lockedRoot != root || lockedFSID != fsID {
-		return store.RootBinding{}, fmt.Errorf("%w: managed root identity changed while locking", store.ErrForeignRoot)
+		return store.RootBinding{}, config.Revision{}, fmt.Errorf("%w: managed root identity changed while locking", store.ErrForeignRoot)
 	}
 
 	markerPath := filepath.Join(root, managedRootMarkerName)
 	marker, err := readManagedRootMarker(markerPath)
+	var binding store.RootBinding
+	publish := func() (func() error, error) { return func() error { return nil }, nil }
 	if err == nil {
-		binding, checkErr := validateManagedRootLocked(ctx, s, root, fsID, marker)
-		if checkErr != nil {
-			return store.RootBinding{}, checkErr
+		identity := s.Identity()
+		old, lookupErr := s.RegisteredRoot(ctx, marker.RootID)
+		if lookupErr != nil || marker.Version != 1 || marker.InstallationID != identity.InstallationID || marker.StoreID != identity.StoreID || marker.ApplicationData != identity.DataDir || old.Path != root || old.FilesystemID != fsID || old.Generation != marker.Generation {
+			return store.RootBinding{}, config.Revision{}, fmt.Errorf("%w: root marker does not match a registered identity", store.ErrForeignRoot)
 		}
-		if checkErr = syncManagedRootDirectory(root); checkErr != nil {
-			return store.RootBinding{}, checkErr
+		old.Active = true
+		binding = old
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		managedData, dataErr := managedDataExists(root)
+		if dataErr != nil {
+			return store.RootBinding{}, config.Revision{}, dataErr
 		}
-		return binding, nil
-	}
-	if !errors.Is(err, os.ErrNotExist) {
-		return store.RootBinding{}, err
-	}
-	managedData, dataErr := managedDataExists(root)
-	if dataErr != nil {
-		return store.RootBinding{}, dataErr
-	}
-	if managedData {
-		return store.RootBinding{}, fmt.Errorf("%w: managed data exists without its authority marker", store.ErrForeignRoot)
+		if managedData {
+			return store.RootBinding{}, config.Revision{}, fmt.Errorf("%w: managed data exists without its authority marker", store.ErrForeignRoot)
+		}
+		identity := s.Identity()
+		previous, previousErr := s.ActiveRoot(ctx)
+		if previousErr == nil && previous.Path == root && previous.FilesystemID == fsID && previous.StoreID == identity.StoreID && previous.InstallationID == identity.InstallationID && previous.DataDir == identity.DataDir {
+			// Complete the same store's prior marker publication after a restart.
+			binding = previous
+		} else {
+			if previousErr != nil && !errors.Is(previousErr, store.ErrNotFound) {
+				return store.RootBinding{}, config.Revision{}, previousErr
+			}
+			id, idErr := backup.NewID()
+			if idErr != nil {
+				return store.RootBinding{}, config.Revision{}, idErr
+			}
+			binding = store.RootBinding{ID: id, Path: root, FilesystemID: fsID, StoreID: identity.StoreID, InstallationID: identity.InstallationID, DataDir: identity.DataDir, Generation: 1, Active: true}
+		}
+		marker = managedRootMarker{Version: 1, RootID: binding.ID, InstallationID: identity.InstallationID, StoreID: identity.StoreID, ApplicationData: identity.DataDir, Generation: binding.Generation}
+		publish = func() (func() error, error) { return publishManagedRootMarkerForRollback(root, marker) }
+	} else if err != nil {
+		return store.RootBinding{}, config.Revision{}, err
 	}
 
-	identity := s.Identity()
-	binding, activeErr := s.ActiveRoot(ctx)
-	if activeErr == nil && binding.Path == root && binding.FilesystemID == fsID && binding.StoreID == identity.StoreID && binding.InstallationID == identity.InstallationID && binding.DataDir == identity.DataDir {
-		// Complete a prior bind whose database commit succeeded before marker
-		// publication. This is not adoption: the same database owns this exact
-		// canonical path and filesystem identity already.
-	} else {
-		if activeErr != nil && !errors.Is(activeErr, store.ErrNotFound) {
-			return store.RootBinding{}, activeErr
-		}
-		id, idErr := backup.NewID()
-		if idErr != nil {
-			return store.RootBinding{}, idErr
-		}
-		binding = store.RootBinding{ID: id, Path: root, FilesystemID: fsID, StoreID: identity.StoreID, InstallationID: identity.InstallationID, DataDir: identity.DataDir, Generation: 1, Active: true}
-		if err = s.BindRoot(ctx, binding); err != nil {
-			return store.RootBinding{}, err
-		}
+	revision, err := s.RebindRootConfig(ctx, expectedRevision, values, binding, publish)
+	if err != nil {
+		return store.RootBinding{}, config.Revision{}, err
 	}
-	marker = managedRootMarker{Version: 1, RootID: binding.ID, InstallationID: identity.InstallationID, StoreID: identity.StoreID, ApplicationData: identity.DataDir, Generation: binding.Generation}
-	if err = publishManagedRootMarker(root, marker); err != nil {
-		return store.RootBinding{}, err
+	if err = syncManagedRootDirectory(root); err != nil {
+		// The database and marker are committed. Return both identities so the
+		// caller can report durability uncertainty without pretending rollback.
+		return binding, revision, err
 	}
-	return binding, nil
+	return binding, revision, nil
 }
 
 func validateManagedRootLocked(ctx context.Context, s *store.Store, root, fsID string, marker managedRootMarker) (store.RootBinding, error) {
@@ -198,6 +234,65 @@ func publishManagedRootMarker(root string, marker managedRootMarker) error {
 	return syncManagedRootDirectory(root)
 }
 
+func publishManagedRootMarkerForRollback(root string, marker managedRootMarker) (func() error, error) {
+	b, err := json.Marshal(marker)
+	if err != nil {
+		return nil, err
+	}
+	id, err := backup.NewID()
+	if err != nil {
+		return nil, err
+	}
+	tmp := filepath.Join(root, ".gitvault-root-"+id+".partial")
+	fd, err := unix.Open(tmp, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0600)
+	if err != nil {
+		return nil, err
+	}
+	f := os.NewFile(uintptr(fd), tmp)
+	ownedTemp := true
+	defer func() {
+		if ownedTemp {
+			_ = os.Remove(tmp)
+		}
+	}()
+	n, writeErr := f.Write(b)
+	if writeErr == nil && n != len(b) {
+		writeErr = io.ErrShortWrite
+	}
+	if writeErr == nil {
+		writeErr = f.Sync()
+	}
+	closeErr := f.Close()
+	if writeErr != nil {
+		return nil, writeErr
+	}
+	if closeErr != nil {
+		return nil, closeErr
+	}
+	markerPath := filepath.Join(root, managedRootMarkerName)
+	if err = unix.Renameat2(unix.AT_FDCWD, tmp, unix.AT_FDCWD, markerPath, unix.RENAME_NOREPLACE); err != nil {
+		return nil, err
+	}
+	ownedTemp = false
+	rollback := func() error {
+		current, readErr := readManagedRootMarker(markerPath)
+		if errors.Is(readErr, os.ErrNotExist) {
+			return nil
+		}
+		if readErr != nil {
+			return readErr
+		}
+		if current != marker {
+			return store.ErrForeignRoot
+		}
+		if err := os.Remove(markerPath); err != nil {
+			return err
+		}
+		return syncManagedRootDirectory(root)
+	}
+	return rollback, nil
+}
+
 func syncManagedRootDirectory(root string) error {
 	dir, err := os.Open(root)
 	if err != nil {
@@ -261,6 +356,17 @@ func canonicalManagedRoot(path string) (string, string, error) {
 		return "", "", err
 	}
 	return path, fmt.Sprintf("dev:%d:ino:%d", uint64(st.Dev), st.Ino), nil
+}
+
+func managedPathsOverlap(a, b string) bool {
+	a, b = filepath.Clean(a), filepath.Clean(b)
+	for _, pair := range [][2]string{{a, b}, {b, a}} {
+		relative, err := filepath.Rel(pair[0], pair[1])
+		if err != nil || relative == "." || relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
 }
 
 func validateManagedRootTrust(path string) error {

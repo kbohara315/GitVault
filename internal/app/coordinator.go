@@ -11,6 +11,7 @@ import (
 	"unicode/utf8"
 
 	"gitvault/internal/backup"
+	"gitvault/internal/config"
 	"gitvault/internal/store"
 )
 
@@ -25,12 +26,18 @@ type SnapshotEngine interface {
 	Verify(context.Context, string) (backup.Verification, error)
 }
 
+// SnapshotEngineFactory maps one admitted immutable configuration revision to
+// module-owned recovery options. It runs after durable admission has captured
+// the revision and before any source or backup-root mutation begins.
+type SnapshotEngineFactory func(config.Revision) (SnapshotEngine, error)
+
 type Coordinator struct {
-	store  *store.Store
-	root   store.RootBinding
-	engine SnapshotEngine
-	ctx    context.Context
-	cancel context.CancelFunc
+	store   *store.Store
+	root    store.RootBinding
+	engine  SnapshotEngine
+	factory SnapshotEngineFactory
+	ctx     context.Context
+	cancel  context.CancelFunc
 
 	mu          sync.Mutex
 	starting    bool
@@ -43,6 +50,7 @@ type Coordinator struct {
 type activeRun struct {
 	run          store.Run
 	task         store.Task
+	engine       SnapshotEngine
 	request      LocalBackupRequest
 	cancel       context.CancelFunc
 	releaseRun   func()
@@ -50,6 +58,34 @@ type activeRun struct {
 	terminalErr  error
 	cancelAsked  bool
 	terminalDone bool
+}
+
+// NewCoordinatorWithFactory constructs a startup inspection engine from the
+// current revision and captures a fresh engine for each admitted run revision.
+func NewCoordinatorWithFactory(parent context.Context, s *store.Store, root store.RootBinding, factory SnapshotEngineFactory) (*Coordinator, error) {
+	if parent == nil || s == nil || factory == nil {
+		return nil, errors.New("application context, store, and snapshot engine factory are required")
+	}
+	revision, err := s.CurrentConfig(parent)
+	if err != nil {
+		return nil, err
+	}
+	engine, err := factory(revision)
+	if err != nil {
+		return nil, err
+	}
+	c, err := NewCoordinator(parent, s, root, engine)
+	if err != nil {
+		return nil, err
+	}
+	c.factory = factory
+	return c, nil
+}
+
+func (c *Coordinator) Ready() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.ready && !c.reconciling && !c.starting && c.active == nil && !c.closed
 }
 
 // LocalBackupRequest is an explicit local-source intent. RepositoryID may be
@@ -203,6 +239,15 @@ func (c *Coordinator) StartLocal(ctx context.Context, request LocalBackupRequest
 		releaseRun()
 		return store.Run{}, err
 	}
+	engine := c.engine
+	if c.factory != nil {
+		engine, err = c.factory(run.Config)
+		if err != nil {
+			releaseRoot()
+			c.failAdmission(run.ID, releaseRun, err)
+			return store.Run{}, err
+		}
+	}
 	task := store.Task{ID: taskID, RunID: run.ID, RepositoryID: request.RepositoryID, Provider: "local", OperationID: reservedSnapshotID, Stage: "pending", Outcome: "pending", Attempt: 1, PublicationState: string(backup.NotPublished), CloudOutcome: "not_requested"}
 	if err = c.store.CreateTask(ctx, task); err != nil {
 		releaseRoot()
@@ -218,7 +263,7 @@ func (c *Coordinator) StartLocal(ctx context.Context, request LocalBackupRequest
 	run.State = "running"
 
 	jobCtx, cancel := context.WithCancel(c.ctx)
-	job := &activeRun{run: run, task: task, request: request, cancel: cancel, releaseRun: releaseRun, done: make(chan struct{})}
+	job := &activeRun{run: run, task: task, engine: engine, request: request, cancel: cancel, releaseRun: releaseRun, done: make(chan struct{})}
 	c.mu.Lock()
 	if c.closed {
 		c.mu.Unlock()
@@ -253,7 +298,7 @@ func (c *Coordinator) failAdmission(runID string, release func(), cause error) {
 }
 
 func (c *Coordinator) execute(ctx context.Context, job *activeRun) {
-	result, engineErr := c.engine.Create(ctx, backup.Request{Source: job.request.SourcePath, Repository: backup.RepositoryIdentity{Provider: "local", ID: job.request.RepositoryID, DisplayName: job.request.DisplayName}, ApplicationVersion: "0.1.0", SnapshotID: job.task.OperationID})
+	result, engineErr := job.engine.Create(ctx, backup.Request{Source: job.request.SourcePath, Repository: backup.RepositoryIdentity{Provider: "local", ID: job.request.RepositoryID, DisplayName: job.request.DisplayName}, ApplicationVersion: "0.1.0", SnapshotID: job.task.OperationID})
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if job.terminalDone {
@@ -304,8 +349,8 @@ func (c *Coordinator) persistTaskResult(ctx context.Context, job *activeRun, res
 			taskOutcome, errorCode = "failed", "artifact_identity_conflict"
 			publication = string(backup.PublicationUnknown)
 		} else {
-			manifest, inspectErr := c.engine.Inspect(ctx, expectedPath)
-			verification, verifyErr := c.engine.Verify(ctx, expectedPath)
+			manifest, inspectErr := job.engine.Inspect(ctx, expectedPath)
+			verification, verifyErr := job.engine.Verify(ctx, expectedPath)
 			if inspectErr != nil || verifyErr != nil || manifest.SnapshotID != expectedID || manifest.Repository.ID != job.request.RepositoryID || manifest.Repository.Provider != "local" {
 				taskOutcome, errorCode = "failed", "artifact_verification_failed"
 				publication = string(backup.PublicationUnknown)

@@ -20,30 +20,69 @@ var pages = [...]struct{ name, title string }{
 }
 
 type App struct {
-	selected                                                           int
-	backend                                                            app.Backend
-	loaded                                                             bool
-	draftRevision                                                      int64
-	settings                                                           app.SettingsDraft
-	schedule                                                           app.ScheduleDraft
-	retention                                                          app.RetentionDraft
-	source, token, search, snapshotPath, destination, selectedSnapshot string
-	error                                                              string
+	selected      int
+	backend       app.Backend
+	loaded        bool
+	draftRevision int64
+	settingsDirty bool
+	rootDirty     bool
+	settings      app.SettingsDraft
+	source        string
+	error         string
 }
 
 func New() *App                               { return NewWithBackend(nil) }
 func NewWithBackend(backend app.Backend) *App { return &App{backend: backend} }
 
-func (a *App) send(cmd app.Command) {
+// send reports whether the bounded admission queue accepted the command. View
+// text never claims that an operation succeeded; workers publish that truth.
+func (a *App) send(cmd app.Command) bool {
 	if a.backend == nil {
 		a.error = "Application is not connected"
-		return
+		return false
 	}
 	if err := a.backend.Submit(cmd); err != nil {
 		a.error = err.Error()
-	} else {
-		a.error = ""
+		return false
 	}
+	a.error = ""
+	return true
+}
+
+// observe refreshes editable drafts only when the backend has advanced and the
+// user has no unsaved edits. A stale save therefore fails its revision check
+// instead of silently overwriting a newer configuration.
+func (a *App) observe(s app.ViewState) {
+	if !s.Connected {
+		return
+	}
+	if !a.loaded {
+		a.sync(s)
+		a.loaded = true
+		return
+	}
+	if s.Revision == a.draftRevision {
+		return
+	}
+	if !a.settingsDirty && !a.rootDirty {
+		a.sync(s)
+		return
+	}
+	// Refresh only the untouched part; a dirty draft keeps the revision it was
+	// based on so its compare-and-swap cannot silently overwrite a newer edit.
+	if !a.settingsDirty {
+		a.settings.Concurrency = s.Settings.Concurrency
+	}
+	if !a.rootDirty {
+		a.settings.Root = s.Settings.Root
+	}
+}
+
+func (a *App) sync(s app.ViewState) {
+	a.settings = s.Settings
+	a.draftRevision = s.Revision
+	a.settingsDirty = false
+	a.rootDirty = false
 }
 
 func (a *App) View(c *ui.Context) {
@@ -51,13 +90,7 @@ func (a *App) View(c *ui.Context) {
 	if a.backend != nil {
 		s = a.backend.Snapshot()
 	}
-	if !a.loaded && s.Connected {
-		a.settings = s.Settings
-		a.schedule = s.Schedule
-		a.retention = s.Retention
-		a.draftRevision = s.Revision
-		a.loaded = true
-	}
+	a.observe(s)
 	t := c.Theme()
 	ui.Column(c).Fill().Padding(24).Gap(16).Children(func() {
 		ui.Row(c).Gap(16).AlignItems(ui.Center).Children(func() {
@@ -105,30 +138,37 @@ func (a *App) View(c *ui.Context) {
 	c.After(200 * time.Millisecond)
 }
 
-func field(c *ui.Context, label string, value *string) {
-	ui.TextInput(c, value).Label(label).Placeholder(label).Width(560)
+func field(c *ui.Context, label string, value *string) bool {
+	return ui.TextInput(c, value).Label(label).Placeholder(label).Width(560).Changed()
 }
 
 func (a *App) overview(c *ui.Context, s app.ViewState) {
-	ui.Text(c, "Full Git bundles. Verified local recovery. Optional cloud copies.").Wrap()
+	ui.Text(c, "Full Git bundles. Verified local recovery. No account is required for local backups.").Wrap()
 	ui.Textf(c, "%d repositories · %d local snapshots", len(s.Repositories), len(s.Snapshots))
 	if s.Account != "" {
 		ui.Text(c, "Connected as "+s.Account)
 	}
 	ui.Text(c, "Coverage: Git history and references. LFS payloads, submodule repositories, and GitHub discussions are not included.").Wrap()
+	if s.Settings.Root == "" {
+		ui.Text(c, "No backup folder is bound. Bind an absolute local folder in Settings before starting a local backup.").Wrap()
+	} else {
+		ui.Text(c, "Backup folder: "+s.Settings.Root).Wrap()
+	}
+	ui.Text(c, "Local backups use only the bound folder. Cloud copies, scheduled runs, retention actions, and restore are not available in this build.").Wrap()
 	if s.CatchUpOffer != "" {
-		ui.Text(c, "A scheduled backup was missed. Run one catch-up?")
-		ui.Row(c).Gap(8).Children(func() {
-			if ui.Button(c, "Run catch-up").Disabled(s.Busy).Clicked() {
-				a.send(app.Command{Kind: app.AcceptCatchUp})
-			}
-			if ui.Button(c, "Dismiss catch-up").Clicked() {
-				a.send(app.Command{Kind: app.DismissCatchUp})
-			}
-		})
+		ui.Text(c, "Scheduled backup offers are not available in this build.").TextColor(c.Theme().TextMuted).Wrap()
 	}
 	for _, task := range s.Tasks {
-		ui.Text(c, task.Repository+" · "+task.Stage+" · "+task.Detail).Wrap()
+		parts := make([]string, 0, 3)
+		for _, part := range []string{task.Repository, task.Stage, task.Detail} {
+			if part != "" {
+				parts = append(parts, part)
+			}
+		}
+		if len(parts) == 0 {
+			parts = append(parts, "Task")
+		}
+		ui.Text(c, strings.Join(parts, " · ")).Wrap()
 		if task.TotalBytes > 0 {
 			ui.Progress(c, float64(task.Bytes)/float64(task.TotalBytes)).Width(560)
 		}
@@ -136,143 +176,118 @@ func (a *App) overview(c *ui.Context, s app.ViewState) {
 }
 
 func (a *App) repositories(c *ui.Context, s app.ViewState) {
-	ui.Text(c, "Your token is kept in the native OS credential store, never in a backup.").Wrap()
-	ui.TextInput(c, &a.token).Label("GitHub token").Placeholder("GitHub personal access token").Password().Width(560)
-	ui.Row(c).Gap(8).Children(func() {
-		if ui.Button(c, "Save GitHub token").Disabled(s.Busy || a.token == "").Clicked() {
-			token := a.token
-			a.token = ""
-			a.send(app.Command{Kind: app.SaveToken, Token: token})
-		}
-		if ui.Button(c, "Refresh repositories").Disabled(s.Busy).Clicked() {
-			a.send(app.Command{Kind: app.Discover})
-		}
-	})
-	field(c, "Search repositories", &a.search)
-	ui.Text(c, "Newly discovered repositories are not selected automatically.")
-	for _, repo := range s.Repositories {
-		if a.search != "" && !strings.Contains(strings.ToLower(repo.Name), strings.ToLower(a.search)) {
-			continue
-		}
-		checked := repo.Selected
-		ui.Row(c).Key(repo.ID).Gap(8).Children(func() {
-			if ui.Checkbox(c, &checked, repo.Name).Disabled(s.Busy).Changed() {
-				a.send(app.Command{Kind: app.SelectRepository, ExpectedRevision: s.Revision, RepositoryID: repo.ID, Selected: checked})
-			}
-			if repo.Private {
-				ui.Text(c, "private").TextColor(c.Theme().TextMuted)
-			}
-		})
+	ui.Text(c, "GitHub discovery, credential setup, and repository selection are not available in this build.").Wrap()
+	ui.Text(c, "Local backups use a filesystem path and do not require an account or a selection.").Wrap()
+	if len(s.Repositories) == 0 {
+		ui.Text(c, "No repositories are available.").TextColor(c.Theme().TextMuted)
+		return
 	}
+	for _, repo := range s.Repositories {
+		line := repo.Name
+		if repo.Private {
+			line += " · private"
+		}
+		if repo.Selected {
+			line += " · selected"
+		}
+		ui.Text(c, line).Wrap()
+	}
+}
+
+// localDestination presents the one managed folder explicitly. Editing the
+// input does not change where a backup starts until the idle bind succeeds.
+func (a *App) localDestination(c *ui.Context, s app.ViewState) {
+	if s.Settings.Root == "" {
+		ui.Text(c, "Managed backup folder: not bound").TextColor(c.Theme().TextMuted)
+	} else {
+		ui.Text(c, "Managed backup folder: "+s.Settings.Root).Wrap()
+	}
+	if field(c, "Backup folder", &a.settings.Root) {
+		a.rootDirty = true
+	}
+	if ui.Button(c, "Bind backup folder").Disabled(s.Busy || !s.CanBindRoot || strings.TrimSpace(a.settings.Root) == "").Clicked() {
+		if a.send(app.Command{Kind: app.BindRoot, ExpectedRevision: a.draftRevision, Root: a.settings.Root}) {
+			a.rootDirty = false
+		}
+	}
+	if !s.CanBindRoot {
+		ui.Text(c, "Changing the backup folder is unavailable while an operation or startup reconciliation is active.").TextColor(c.Theme().TextMuted).Wrap()
+	}
+	ui.Text(c, "Editing the field does not change the destination. Binding validates the folder before it becomes the managed destination; a backup always uses the bound folder. Existing snapshots are never moved or deleted.").Wrap()
 }
 
 func (a *App) backups(c *ui.Context, s app.ViewState) {
+	ui.Text(c, "Create a full verified bundle from a local Git repository. The bundle is written under the managed backup folder.").Wrap()
+	a.localDestination(c, s)
+	ui.Text(c, "A backup in progress retains the folder and concurrency revision it was admitted with.").Wrap()
 	field(c, "Local repository path", &a.source)
-	field(c, "Backup folder", &a.settings.Root)
-	ui.Row(c).Gap(8).Children(func() {
-		if ui.PrimaryButton(c, "Back up local repository").Disabled(s.Busy || a.source == "" || a.settings.Root == "").Clicked() {
-			a.send(app.Command{Kind: app.BackupLocal, Source: a.source, Root: a.settings.Root})
-		}
-		if ui.Button(c, "Back up selected repositories").Disabled(s.Busy).Clicked() {
-			a.send(app.Command{Kind: app.BackupSelected})
-		}
-	})
+	if s.Settings.Concurrency != "" {
+		ui.Text(c, "Saved repository concurrency: "+s.Settings.Concurrency).TextColor(c.Theme().TextMuted)
+	}
+	if !s.CanStartLocal {
+		ui.Text(c, "A new local backup can start only when no operation is active and startup checks have completed.").TextColor(c.Theme().TextMuted).Wrap()
+	}
+	if ui.PrimaryButton(c, "Back up local repository").Disabled(s.Busy || !s.CanStartLocal || s.Settings.Root == "" || strings.TrimSpace(a.source) == "").Clicked() {
+		a.send(app.Command{Kind: app.BackupLocal, Source: a.source})
+	}
+	ui.Text(c, "A second backup request is rejected while one is active; it is not queued.").Wrap()
+
+	ui.Text(c, "Local snapshots").Bold()
+	if len(s.Snapshots) == 0 {
+		ui.Text(c, "No local snapshots have been recorded.").TextColor(c.Theme().TextMuted)
+	}
 	for _, snap := range s.Snapshots {
-		ui.Column(c).Gap(6).Children(func() {
-			ui.Text(c, snap.Repository+" · "+snap.CreatedAt.Local().Format("2006-01-02 15:04"))
-			ui.Text(c, snap.Verification+" · cloud: "+snap.CloudStatus).TextColor(c.Theme().TextMuted)
-			ui.Row(c).Gap(8).Children(func() {
-				if ui.Button(c, "Restore "+short(snap.ID)).Clicked() {
-					a.snapshotPath = snap.Path
-					a.selectedSnapshot = snap.ID
-					a.destination = ""
-					a.selected = 3
-				}
-				if ui.Button(c, "Upload "+short(snap.ID)).Disabled(s.Busy || !snap.LocalReady).Clicked() {
-					a.send(app.Command{Kind: app.Upload, SnapshotID: snap.ID})
-				}
-				pinned := snap.Pinned
-				if ui.Checkbox(c, &pinned, "Pin "+short(snap.ID)).Disabled(s.Busy).Changed() {
-					a.send(app.Command{Kind: app.PinSnapshot, SnapshotID: snap.ID, Selected: pinned})
-				}
-			})
-		})
-	}
-	ui.Text(c, "Retention is preview-first. A policy never authorizes deletion.").Wrap()
-	ui.Row(c).Gap(8).Children(func() {
-		if ui.Button(c, "Preview retention").Disabled(s.Busy).Clicked() {
-			a.send(app.Command{Kind: app.PreviewRetention, Retention: a.retention})
+		label := snap.Repository
+		if label == "" {
+			label = "local snapshot"
 		}
-		if ui.Button(c, "Delete exactly this preview").Disabled(s.Busy || s.RetentionPreviewID == "").Clicked() {
-			a.send(app.Command{Kind: app.ExecuteRetention, SnapshotID: s.RetentionPreviewID, Confirm: true})
+		ui.Text(c, label+" · "+short(snap.ID)).Wrap()
+		if !snap.CreatedAt.IsZero() {
+			ui.Text(c, snap.CreatedAt.Local().Format("2006-01-02 15:04")).TextColor(c.Theme().TextMuted)
 		}
-	})
-	if s.RetentionSummary != "" {
-		ui.Text(c, s.RetentionSummary).Wrap()
+		state := "not ready"
+		if snap.LocalReady {
+			state = "ready"
+		}
+		detail := "local: " + state
+		if snap.Verification != "" {
+			detail += " · verification: " + snap.Verification
+		}
+		if snap.Path != "" {
+			detail += " · " + snap.Path
+		}
+		ui.Text(c, detail).TextColor(c.Theme().TextMuted).Wrap()
 	}
+	ui.Text(c, "Snapshot inspection, import, upload, and restore are not available in this build.").Wrap()
 }
 
-func (a *App) restore(c *ui.Context, s app.ViewState) {
-	ui.Text(c, "Restore a verified full snapshot into a new bare repository. Existing destinations are never overwritten.").Wrap()
-	if ui.TextInput(c, &a.snapshotPath).Label("Snapshot folder").Placeholder("Snapshot folder").Width(560).Changed() {
-		a.selectedSnapshot = ""
-		a.destination = ""
-	}
-	field(c, "New restore destination", &a.destination)
-	if ui.PrimaryButton(c, "Verify and restore").Disabled(s.Busy || a.snapshotPath == "" || a.destination == "").Clicked() {
-		a.send(app.Command{Kind: app.Restore, SnapshotID: a.selectedSnapshot, SnapshotPath: a.snapshotPath, Destination: a.destination})
-	}
-	if ui.Button(c, "List cloud snapshots").Disabled(s.Busy).Clicked() {
-		a.send(app.Command{Kind: app.ListRemote})
-	}
-	for _, snap := range s.Remote {
-		if ui.Button(c, "Download and restore "+short(snap.ID)).Disabled(s.Busy || a.destination == "").Clicked() {
-			a.send(app.Command{Kind: app.DownloadRestore, SnapshotID: snap.ID, Destination: a.destination})
-		}
-	}
+func (a *App) restore(c *ui.Context, _ app.ViewState) {
+	ui.Text(c, "Restore is not available in this build.").Bold()
+	ui.Text(c, "Local recovery will restore a verified full snapshot into a new bare destination. Existing destinations are never overwritten.").Wrap()
+	ui.Text(c, "No restore command is exposed until that recovery workflow is implemented; no saved folder is treated as restore permission.").Wrap()
 }
 
 func (a *App) preferences(c *ui.Context, s app.ViewState) {
 	if ui.Button(c, "Reload saved settings").Disabled(s.Busy).Clicked() {
-		a.settings = s.Settings
-		a.schedule = s.Schedule
-		a.retention = s.Retention
-		a.draftRevision = s.Revision
+		a.sync(s)
 		a.error = ""
 	}
-	field(c, "Backup folder", &a.settings.Root)
-	field(c, "Repository concurrency", &a.settings.Concurrency)
-	ui.Checkbox(c, &a.settings.CloudEnabled, "Enable cloud copies")
-	field(c, "Cloud provider (s3 or r2)", &a.settings.CloudProvider)
-	field(c, "Bucket", &a.settings.CloudBucket)
-	field(c, "Region", &a.settings.CloudRegion)
-	field(c, "HTTPS endpoint (optional for S3)", &a.settings.CloudEndpoint)
-	field(c, "Object prefix", &a.settings.CloudPrefix)
-	ui.TextInput(c, &a.settings.CloudAccessKey).Label("Cloud access key").Password().Width(560)
-	ui.TextInput(c, &a.settings.CloudSecretKey).Label("Cloud secret key").Password().Width(560)
-	ui.Checkbox(c, &a.settings.CloudReadBack, "Read back cloud bytes after upload")
-	ui.Text(c, "Cloud copies contain unencrypted Git history. Enable only a target you control.").Wrap()
-	if ui.Button(c, "Save settings").Disabled(s.Busy).Clicked() {
-		draft := a.settings
-		a.settings.CloudAccessKey = ""
-		a.settings.CloudSecretKey = ""
-		a.send(app.Command{Kind: app.SaveSettings, ExpectedRevision: a.draftRevision, Settings: draft, Confirm: a.settings.CloudEnabled})
+	ui.Text(c, "Local backup").Bold()
+	a.localDestination(c, s)
+	if field(c, "Repository concurrency", &a.settings.Concurrency) {
+		a.settingsDirty = true
 	}
-	ui.Text(c, "In-app schedule").Bold()
-	ui.Checkbox(c, &a.schedule.Enabled, "Enable scheduled backups")
-	field(c, "Timezone (IANA)", &a.schedule.Timezone)
-	field(c, "Time (HH:MM)", &a.schedule.LocalTime)
-	field(c, "Frequency (daily, weekly, monthly)", &a.schedule.Frequency)
-	field(c, "Weekday (Monday=1)", &a.schedule.Weekday)
-	field(c, "Day of month", &a.schedule.Monthday)
-	ui.Text(c, "DST: first valid instant in gaps, earlier occurrence in folds. Short months use their last day. Missed runs create one offer; the app must remain running.").Wrap()
-	if ui.Button(c, "Save schedule").Disabled(s.Busy).Clicked() {
-		a.send(app.Command{Kind: app.SaveSchedule, ExpectedRevision: a.draftRevision, Schedule: a.schedule, Confirm: true})
+	ui.Text(c, "Repository concurrency is 1–8. New runs use the saved settings revision; an active run keeps the revision it already captured.").Wrap()
+	if ui.Button(c, "Save settings").Disabled(s.Busy || strings.TrimSpace(a.settings.Concurrency) == "").Clicked() {
+		draft := app.SettingsDraft{Concurrency: a.settings.Concurrency}
+		if a.send(app.Command{Kind: app.SaveSettings, ExpectedRevision: a.draftRevision, Settings: draft}) {
+			a.settingsDirty = false
+		}
 	}
-	ui.Text(c, "Retention buckets (UTC)").Bold()
-	field(c, "Keep daily", &a.retention.Daily)
-	field(c, "Keep weekly", &a.retention.Weekly)
-	field(c, "Keep monthly", &a.retention.Monthly)
+	ui.Text(c, "This save changes non-root local settings only. Use Bind backup folder to change the managed folder explicitly.").Wrap()
+
+	ui.Text(c, "Unavailable in this build").Bold()
+	ui.Text(c, "GitHub discovery and selection, credential storage, cloud copies, schedules, retention preview or deletion, and restore are not implemented yet. No control is shown for them.").Wrap()
 }
 
 func short(id string) string {

@@ -1,6 +1,6 @@
 # Module composition and ownership
 
-Status: target design. Only `internal/desktop` currently exists. This specification uses module, interface, seam, adapter, depth, leverage, and locality deliberately.
+Status: target design. The implemented subset now includes the recovery, configuration, persistence, coordination, and native local-workflow modules; I05 is accepted for Linux-host implementation scope. The diagrams describe the full target composition, not an assertion that every service is integrated or platform-qualified. This specification uses module, interface, seam, adapter, depth, leverage, and locality deliberately.
 
 ## Full application shape
 

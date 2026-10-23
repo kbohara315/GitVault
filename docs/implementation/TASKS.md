@@ -25,7 +25,7 @@ Read [the runbook](../AGENT-RUNBOOK.md), [MODULES](../MODULES.md), [RECOVERY-SEM
 | I02 | Controlled Git and process-tree lifetime | I01 | DONE (Linux runner) |
 | I03 | Offline full snapshot and no-replace bare restore | I01, I02 | DONE (Linux host; other platforms/filesystems pending) |
 | I04 | SQLite durable jobs and reconciliation | I03 | DONE (Linux host; other OS/filesystems pending) |
-| I05 | Typed revisions and responsive native local workflow | I04 | TODO |
+| I05 | Typed revisions and responsive native local workflow | I04 | DONE (Linux/amd64 implementation scope; broader qualification pending) |
 | I06 | MyGo-native secrets and PAT broker onboarding | I05, I02 | TODO |
 | I07 | GitHub REST pagination and explicit stable selection | I06, I05 | TODO |
 | I08 | Selected GitHub-to-local snapshot pipeline | I07, I03, I04, I05, I06 | TODO |
@@ -117,7 +117,7 @@ Dependency availability is not edit-disjointness: I09/I14 can be logically avail
 
 ## I05 — Typed revisions and responsive native local workflow
 
-**Purpose:** usable local native creation/cancel with immutable intent. **Dependencies:** I04. **Status:** TODO.
+**Purpose:** usable local native creation/cancel with immutable intent. **Dependencies:** I04. **Status:** DONE for Linux/amd64 implementation scope after automated gates, native smoke, and independent GPT-6 Luna review. Other platforms and broader filesystem/crash behavior remain unqualified. Start inventory and observable failure cases: `/tmp/opencode/gitvault-i05-evidence/I05-start.txt` and `input-sha256.txt`.
 
 **Allowed:** `internal/{config,app,store,desktop}/**`, `main.go`, `docs/{CONFIGURATION,MODULES}.md`, common status paths.
 
@@ -132,6 +132,8 @@ Dependency availability is not edit-disjointness: I09/I14 can be logically avail
 **Tests/gates:** `config_revisions`: `TestConfigBoundsAndMigration`, `TestConfigImmutableRevision`; `native_local`: `TestLocalWorkflowCommands`, `TestBoundedProgressBridge`, `TestMainThreadDispatchNoWaitCycle`. Commands `go test ./internal/config -count=1`, `go test ./internal/desktop -count=1`, exact gates and G; five named passes. `TestConfigImmutableRevision` must cover concurrent head-CAS conflict, rollback between projection/head writes, atomic admission during edit, and no mixed selection/target/schedule revisions. Slow engine never blocks view; active intent retains its original revision.
 
 **Failure/cancel/restart:** invalid config has no effects, UI closure/saturation never blocks terminal persistence, restart queries durable state without second start. **Stop:** worker/main cycle, unpinned MyGo API assumption, mutable run settings or view I/O. **Platform evidence:** headless controls plus native Start/Cancel responsiveness on each claimed OS; record measured latency and setup honestly.
+
+**Current evidence:** `/tmp/opencode/gitvault-i05-evidence/I05-review-status.md` records passing Linux/amd64 gates and an independent GPT-6 Luna review with no actionable findings; the user selected GPT-6 Luna in place of DeepSeek. The native smoke used an isolated synthetic repository and vault; Start action returned in 0.111 ms, Cancel appeared after 215.026 ms, Cancel action returned in 0.116 ms, and the durable run ended cancelled with no snapshot. ATK warnings during test-only accessibility-bridge shutdown are recorded. This acceptance is not release, data-protection, or broader platform qualification.
 
 ## I06 — MyGo-native secrets and PAT broker onboarding
 

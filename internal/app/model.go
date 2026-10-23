@@ -8,6 +8,7 @@ type CommandKind string
 
 const (
 	Refresh          CommandKind = "refresh"
+	BindRoot         CommandKind = "bind_root"
 	SaveToken        CommandKind = "save_token"
 	Discover         CommandKind = "discover"
 	SelectRepository CommandKind = "select_repository"
@@ -41,11 +42,7 @@ type Command struct {
 }
 
 type SettingsDraft struct {
-	Root, Concurrency                                                   string
-	CloudEnabled                                                        bool
-	CloudProvider, CloudBucket, CloudRegion, CloudEndpoint, CloudPrefix string
-	CloudAccessKey, CloudSecretKey                                      string
-	CloudReadBack                                                       bool
+	Root, Concurrency string
 }
 
 type ScheduleDraft struct {
@@ -72,17 +69,17 @@ type TaskView struct {
 }
 
 type ViewState struct {
-	Revision                                           int64
-	Busy, CanCancel, Connected                         bool
-	Status, Notice, Error, Account                     string
-	Settings                                           SettingsDraft
-	Schedule                                           ScheduleDraft
-	Retention                                          RetentionDraft
-	Repositories                                       []RepositoryView
-	Snapshots                                          []SnapshotView
-	Remote                                             []SnapshotView
-	Tasks                                              []TaskView
-	RetentionPreviewID, RetentionSummary, CatchUpOffer string
+	Revision                                               int64
+	Busy, CanCancel, CanBindRoot, CanStartLocal, Connected bool
+	Status, Notice, Error, Account                         string
+	Settings                                               SettingsDraft
+	Schedule                                               ScheduleDraft
+	Retention                                              RetentionDraft
+	Repositories                                           []RepositoryView
+	Snapshots                                              []SnapshotView
+	Remote                                                 []SnapshotView
+	Tasks                                                  []TaskView
+	RetentionPreviewID, RetentionSummary, CatchUpOffer     string
 }
 
 // Backend's snapshot is an in-memory copy, not a database/network query. Submit

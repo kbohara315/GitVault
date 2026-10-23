@@ -31,7 +31,7 @@ func TestRunAdmissionAndReopen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if r.State != "preparing" || r.Config.ID() != 1 {
+	if r.State != "preparing" || r.Config.ID() != 2 {
 		t.Fatalf("admission not captured: %+v", r)
 	}
 	_, err = b.BeginRun(ctx, RunIntent{ID: "run-2", Trigger: "manual", Kind: "local_backup", RootID: root.ID, RepositoryIDs: []string{"local-2"}, SourcePath: "/synthetic/source"})

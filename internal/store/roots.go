@@ -4,10 +4,16 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"unicode/utf8"
+
+	"gitvault/internal/config"
 )
+
+var ErrRootRebindUnknown = errors.New("root rebind commit outcome is unknown; keep the marker and reconcile")
 
 // RootBinding is the exact identity from the marker validated by the caller
 // under the root OS lock. FilesystemID is a qualified canonical filesystem
@@ -36,6 +42,13 @@ func (s *Store) RootBinding(ctx context.Context, id string) (RootBinding, error)
 	return readRoot(ctx, s.db, s.identity, id, true)
 }
 
+// RegisteredRoot returns an identity owned by this store whether or not it is
+// currently active. Callers may use it only to implement an explicit, idle
+// rebind after validating the matching on-disk authority marker.
+func (s *Store) RegisteredRoot(ctx context.Context, id string) (RootBinding, error) {
+	return readRoot(ctx, s.db, s.identity, id, false)
+}
+
 // ActiveRoot returns the single current managed-root binding, if one exists.
 func (s *Store) ActiveRoot(ctx context.Context) (RootBinding, error) {
 	var id string
@@ -49,46 +62,153 @@ func (s *Store) ActiveRoot(ctx context.Context) (RootBinding, error) {
 	return readRoot(ctx, s.db, s.identity, id, true)
 }
 
-// BindRoot persists an explicitly validated idle bind/rebind. A prior root ID
-// can never be repointed; create a new root ID for a different filesystem.
-func (s *Store) BindRoot(ctx context.Context, r RootBinding) error {
-	if r.StoreID != s.identity.StoreID || r.InstallationID != s.identity.InstallationID || r.DataDir != s.identity.DataDir {
-		return ErrForeignRoot
+// RebindRootConfig atomically changes the active database binding, immutable
+// configuration revision, revision-keyed projections, and settings head. The
+// caller holds the selected root's OS ownership locks and supplies a narrowly
+// scoped marker-publication callback. If the transaction is known to roll back,
+// the returned rollback function removes only the marker it just published. If
+// Commit itself fails, the outcome is uncertain and the marker is preserved for
+// reconciliation rather than risking deletion of committed authority.
+func (s *Store) RebindRootConfig(ctx context.Context, expectedRevision int64, values config.Config, root RootBinding, publishMarker func() (rollback func() error, err error)) (config.Revision, error) {
+	values, err := config.Normalize(values)
+	if err != nil {
+		return config.Revision{}, err
 	}
-	if !validID(r.ID) || !filepath.IsAbs(r.Path) || filepath.Clean(r.Path) != r.Path || strings.ContainsRune(r.Path, 0) || !utf8.ValidString(r.Path) || r.FilesystemID == "" || len(r.FilesystemID) > 1024 || !utf8.ValidString(r.FilesystemID) || strings.ContainsRune(r.FilesystemID, 0) || r.Generation < 1 || !r.Active {
-		return errors.New("invalid root binding")
+	if expectedRevision < 1 || root.StoreID != s.identity.StoreID || root.InstallationID != s.identity.InstallationID || root.DataDir != s.identity.DataDir {
+		return config.Revision{}, ErrForeignRoot
+	}
+	if publishMarker == nil {
+		return config.Revision{}, errors.New("managed-root marker publication is required")
+	}
+	if !validID(root.ID) || !filepath.IsAbs(root.Path) || filepath.Clean(root.Path) != root.Path || strings.ContainsRune(root.Path, 0) || !utf8.ValidString(root.Path) || root.FilesystemID == "" || len(root.FilesystemID) > 1024 || !utf8.ValidString(root.FilesystemID) || strings.ContainsRune(root.FilesystemID, 0) || root.Generation < 1 || !root.Active {
+		return config.Revision{}, errors.New("invalid root binding")
+	}
+	if values.Backup.Root == nil || *values.Backup.Root != root.Path {
+		return config.Revision{}, errors.New("configuration root must match the explicitly rebound root")
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return config.Revision{}, err
 	}
 	defer tx.Rollback()
-	if err = ensureIdle(ctx, tx); err != nil {
-		return err
+	current, err := readRevision(ctx, tx, 0)
+	if err != nil {
+		return config.Revision{}, err
 	}
-	old, err := readRoot(ctx, tx, s.identity, r.ID, false)
-	if err == nil {
-		if old.Path != r.Path || old.FilesystemID != r.FilesystemID || old.Generation != r.Generation {
-			return ErrConflict
+	if current.ID() != expectedRevision {
+		return config.Revision{}, ErrConflict
+	}
+	currentValues := current.Config()
+	requestedValues := values.Clone()
+	currentValues.Backup.Root = nil
+	requestedValues.Backup.Root = nil
+	if !reflect.DeepEqual(currentValues, requestedValues) {
+		return config.Revision{}, errors.New("root rebind cannot change unrelated settings")
+	}
+	if err = ensureIdle(ctx, tx); err != nil {
+		return config.Revision{}, err
+	}
+	if rootPathsOverlap(root.Path, root.DataDir) {
+		return config.Revision{}, ErrOverlappingRoots
+	}
+	if err = validateNoRootOverlap(ctx, tx, root); err != nil {
+		return config.Revision{}, err
+	}
+	old, oldErr := readRoot(ctx, tx, s.identity, root.ID, false)
+	if oldErr == nil {
+		if old.Path != root.Path || old.FilesystemID != root.FilesystemID || old.Generation != root.Generation {
+			return config.Revision{}, ErrConflict
 		}
-	} else if !errors.Is(err, ErrForeignRoot) {
-		return err
+	} else if !errors.Is(oldErr, ErrForeignRoot) {
+		return config.Revision{}, oldErr
 	} else {
 		var exists int
-		if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM managed_roots WHERE id=?`, r.ID).Scan(&exists); err != nil {
-			return err
+		if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM managed_roots WHERE id=?`, root.ID).Scan(&exists); err != nil {
+			return config.Revision{}, err
 		}
 		if exists != 0 {
-			return ErrForeignRoot
+			return config.Revision{}, ErrForeignRoot
 		}
 	}
+	if err = validateTargetHistory(ctx, tx, values.Cloud.Targets); err != nil {
+		return config.Revision{}, err
+	}
+	if !sameTargets(current.Config().Cloud.Targets, values.Cloud.Targets) {
+		return config.Revision{}, errors.New("root rebind cannot also change cloud target identity")
+	}
 	if _, err = tx.ExecContext(ctx, `UPDATE managed_roots SET active=0 WHERE active=1`); err != nil {
+		return config.Revision{}, err
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO managed_roots VALUES(?,?,?,?,?,?,?,1) ON CONFLICT(id) DO UPDATE SET active=1`, root.ID, root.Path, root.FilesystemID, root.StoreID, root.InstallationID, root.DataDir, root.Generation); err != nil {
+		return config.Revision{}, err
+	}
+	revision, err := insertConfig(ctx, tx, values)
+	if err != nil {
+		return config.Revision{}, err
+	}
+	if err = s.checkpoint("config.after_projections"); err != nil {
+		return config.Revision{}, err
+	}
+	result, err := tx.ExecContext(ctx, `UPDATE settings_head SET revision_id=? WHERE singleton=1 AND revision_id=?`, revision.ID(), expectedRevision)
+	if err != nil {
+		return config.Revision{}, err
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return config.Revision{}, err
+	}
+	if changed != 1 {
+		return config.Revision{}, ErrConflict
+	}
+	rollbackMarker := func() error { return nil }
+	if publishMarker != nil {
+		rollbackMarker, err = publishMarker()
+		if err != nil {
+			return config.Revision{}, err
+		}
+		if rollbackMarker == nil {
+			rollbackMarker = func() error { return nil }
+		}
+	}
+	if err = s.checkpoint("root_rebind.before_commit"); err != nil {
+		return config.Revision{}, errors.Join(err, rollbackMarker())
+	}
+	if err = tx.Commit(); err != nil {
+		return config.Revision{}, fmt.Errorf("%w: %w", ErrRootRebindUnknown, err)
+	}
+	return revision, nil
+}
+
+func validateNoRootOverlap(ctx context.Context, tx *sql.Tx, candidate RootBinding) error {
+	rows, err := tx.QueryContext(ctx, `SELECT id,path FROM managed_roots`)
+	if err != nil {
 		return err
 	}
-	if _, err = tx.ExecContext(ctx, `INSERT INTO managed_roots VALUES(?,?,?,?,?,?,?,1) ON CONFLICT(id) DO UPDATE SET active=1`, r.ID, r.Path, r.FilesystemID, r.StoreID, r.InstallationID, r.DataDir, r.Generation); err != nil {
-		return err
+	defer rows.Close()
+	for rows.Next() {
+		var id, path string
+		if err = rows.Scan(&id, &path); err != nil {
+			return err
+		}
+		if id == candidate.ID && path == candidate.Path {
+			continue
+		}
+		if rootPathsOverlap(path, candidate.Path) {
+			return ErrOverlappingRoots
+		}
 	}
-	return tx.Commit()
+	return rows.Err()
+}
+
+func rootPathsOverlap(a, b string) bool {
+	a, b = filepath.Clean(a), filepath.Clean(b)
+	for _, pair := range [][2]string{{a, b}, {b, a}} {
+		relative, err := filepath.Rel(pair[0], pair[1])
+		if err != nil || relative == "." || relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
 }
 
 // ValidateRoot checks the complete marker identity against the persisted active

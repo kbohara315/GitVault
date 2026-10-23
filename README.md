@@ -2,14 +2,14 @@
 
 A native Go desktop application for local-first Git repository backup and recovery.
 
-**Status: implementation in progress, not ready to protect data.** Reviewed modules include the snapshot contract, Linux controlled Git runner, secrets/discovery adapters, schedule/retention policies, and native controls with behavioral tests. The recovery engine and durable application wiring are still being built; controls are not yet connected to a real backend. See [current task status](docs/implementation/TASKS.md).
+**Status: implementation in progress; not ready to protect data.** I01–I05 are accepted for their documented Linux-host implementation scope, including native Start/Cancel smoke for I05. Non-Linux and broader filesystem/crash behavior remain unqualified. GitHub discovery, native credentials, cloud copies, schedules, retention, and restoration are not wired into this build. See [current task status](docs/implementation/TASKS.md).
 
 ## Technology
 
 - MyGo **v0.6.2**, pinned in `go.mod` for both runtime and CLI.
 - Native GPU-drawn UI written in Go.
 - Planned backup format: full Git bundles created from local bare mirrors.
-- Planned persistence: SQLite for jobs and snapshot metadata; OS-backed storage for secrets.
+- SQLite stores typed configuration and durable local run/snapshot metadata. OS-backed credential storage and remote/cloud settings are planned, not wired.
 - Planned optional cloud storage: AWS S3 and Cloudflare R2.
 
 MyGo draws its own controls. “Native” does not mean standard OS widget controls. Its pre-1.0 API and platform support need validation before release.
@@ -18,7 +18,7 @@ MyGo draws its own controls. “Native” does not mean standard OS widget contr
 
 - Go **1.27.1 or later**. The pinned MyGo version requires it. An older Go installation with automatic toolchain selection can download the required toolchain.
 - A graphical desktop for running the app. Native Linux UI needs GTK 3, not WebKitGTK.
-- Git on `PATH` for future backup operations and integration tests. The current UI does not run Git.
+- Git on `PATH` for local backups and integration tests. The native workflow runs Git in a worker, not in a view; GitHub discovery is not wired.
 - Network access for the first Go dependency download.
 
 ## Quick start

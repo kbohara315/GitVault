@@ -16,11 +16,7 @@ func TestSnapshotTaskPinLeaseRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	identity := s.Identity()
-	root := RootBinding{ID: "root-1", Path: filepath.Join(privateTempDir(t), "managed"), FilesystemID: "synthetic-device-inode", StoreID: identity.StoreID, InstallationID: identity.InstallationID, DataDir: identity.DataDir, Generation: 1, Active: true}
-	if err = s.BindRoot(ctx, root); err != nil {
-		t.Fatal(err)
-	}
+	root := bindTestRoot(t, s)
 	r, err := s.BeginRun(ctx, RunIntent{ID: "run-1", Trigger: "manual", Kind: "local_backup", RootID: root.ID, RepositoryIDs: []string{"repo-1"}})
 	if err != nil {
 		t.Fatal(err)

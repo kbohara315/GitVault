@@ -1,6 +1,6 @@
 # Full-release implementation plan
 
-**Canonical execution entry point. Status: implementation in progress. I01–I04 implementation slices are accepted for Linux-host scope; I03/I04 non-Linux and broader filesystem/crash qualification remains pending. The native desktop still starts without its real backend; I05 workflow integration is next. No release approval or universal platform qualification is implied.**
+**Canonical execution entry point. Status: implementation in progress. I01–I05 slices are accepted for Linux-host implementation scope; I05 includes automated gates and native Start/Cancel smoke. Non-Linux and broader filesystem/crash qualification remain pending. I06–I16 are still to be implemented. No release approval or universal platform qualification is implied.**
 
 ## Destination
 

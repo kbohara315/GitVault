@@ -23,12 +23,14 @@ import (
 )
 
 var (
-	ErrConflict          = errors.New("stale revision or conflicting identity")
-	ErrNotFound          = errors.New("record not found")
-	ErrFutureSchema      = errors.New("unsupported future database schema")
-	ErrMigrationHistory  = errors.New("missing or altered migration history")
-	ErrForeignRoot       = errors.New("root binding does not belong to this database installation")
-	ErrInvalidTransition = errors.New("invalid state transition")
+	ErrConflict           = errors.New("stale revision or conflicting identity")
+	ErrNotFound           = errors.New("record not found")
+	ErrFutureSchema       = errors.New("unsupported future database schema")
+	ErrMigrationHistory   = errors.New("missing or altered migration history")
+	ErrForeignRoot        = errors.New("root binding does not belong to this database installation")
+	ErrOverlappingRoots   = errors.New("managed root overlaps another registered root")
+	ErrRootRebindRequired = errors.New("backup root changes require explicit validated rebind")
+	ErrInvalidTransition  = errors.New("invalid state transition")
 )
 
 type BusyError struct{ RunID string }
@@ -368,7 +370,10 @@ func (s *Store) SaveConfig(ctx context.Context, expectedRevision int64, c config
 	if err = validateTargetHistory(ctx, tx, c.Cloud.Targets); err != nil {
 		return config.Revision{}, err
 	}
-	if !sameString(old.Backup.Root, c.Backup.Root) || !sameTargets(old.Cloud.Targets, c.Cloud.Targets) {
+	if !sameString(old.Backup.Root, c.Backup.Root) {
+		return config.Revision{}, ErrRootRebindRequired
+	}
+	if !sameTargets(old.Cloud.Targets, c.Cloud.Targets) {
 		if err = ensureIdle(ctx, tx); err != nil {
 			return config.Revision{}, err
 		}

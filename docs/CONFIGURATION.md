@@ -1,11 +1,11 @@
 # Configuration contract
 
-**Status: selected technical direction for the release plan; not implemented by the scaffold.** This document owns settings interpretation, not the portable artifact format in `BACKUP-FORMAT.md`. Technical defaults delegated to implementation agents are not human release approval, permission to access credentials, cloud disclosure consent, or deletion authority.
+**Status: the typed configuration core is implemented for current local consumers (root, concurrency, finite limits/timeouts, and immutable revisions); I05 is accepted for Linux-host implementation scope. Cloud, schedule, and secret settings remain future integration work.** This document owns settings interpretation, not the portable artifact format in `BACKUP-FORMAT.md`. Technical defaults delegated to implementation agents are not human release approval, permission to access credentials, cloud disclosure consent, or deletion authority.
 
 ## Ownership and composition
 
 - SQLite is the single source of truth for writable, non-secret runtime settings. Do not add a writable JSON/YAML settings file, environment override layer, or competing per-module store. MyGo build configuration is not application settings.
-- Introduce `internal/config` when durable settings integration begins. It owns typed versioned records, defaults, normalization, migration, cross-field validation, and revision creation. Module-owned option types retain locality; a consumer interface exposes only the options its module needs.
+- `internal/config` owns typed versioned records, defaults, normalization, migration, cross-field validation, and revision creation. Module-owned option types retain locality; a consumer interface exposes only the options its module needs.
 - The application composition module maps the normalized configuration to Git, cloud, scheduler, and secret-store adapters. This seam provides testing leverage without global variables, arbitrary plugins, shell hooks, or a service locator.
 - Admit each backup, restore, upload retry, or retention execution with one immutable normalized revision and explicit intent. Record effective non-secret values, selected stable repository IDs, target IDs, and credential reference/generation. No module reads changing settings during accepted work.
 - Independent configuration, database-schema, artifact-format, and application versions must not be conflated. A settings revision is an immutable identity, not the schema version.

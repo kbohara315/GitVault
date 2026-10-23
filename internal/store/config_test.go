@@ -40,7 +40,7 @@ func TestConfigurationProjectionRollbackAndAdmission(t *testing.T) {
 		t.Fatalf("expected injected failure: %v", err)
 	}
 	s.hook = nil
-	for table, want := range map[string]int{"config_revisions": 1, "selected_repositories": 0, "cloud_targets": 0, "schedule_config": 1} {
+	for table, want := range map[string]int{"config_revisions": 2, "selected_repositories": 0, "cloud_targets": 0, "schedule_config": 2} {
 		var count int
 		if err = s.db.QueryRowContext(ctx, `SELECT count(*) FROM `+table).Scan(&count); err != nil || count != want {
 			t.Fatalf("partial %s: %d %v", table, count, err)

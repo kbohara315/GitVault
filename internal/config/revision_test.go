@@ -36,11 +36,22 @@ func TestConfigImmutableRevision(t *testing.T) {
 	}
 	defer b.Close()
 	identity := a.Identity()
-	root := store.RootBinding{ID: "test-root", Path: filepath.Join(dir, "managed"), FilesystemID: "synthetic-filesystem", StoreID: identity.StoreID, InstallationID: identity.InstallationID, DataDir: identity.DataDir, Generation: 1, Active: true}
-	if err = a.BindRoot(ctx, root); err != nil {
+	rootBase, err := os.MkdirTemp("/tmp", "gitvault-config-root-test-")
+	if err != nil {
 		t.Fatal(err)
 	}
+	defer os.RemoveAll(rootBase)
+	root := store.RootBinding{ID: "test-root", Path: filepath.Join(rootBase, "managed"), FilesystemID: "synthetic-filesystem", StoreID: identity.StoreID, InstallationID: identity.InstallationID, DataDir: identity.DataDir, Generation: 1, Active: true}
 	initial, err := a.CurrentConfig(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rootPath := root.Path
+	rootValues := initial.Config()
+	rootValues.Backup.Root = &rootPath
+	initial, err = a.RebindRootConfig(ctx, initial.ID(), rootValues, root, func() (func() error, error) {
+		return func() error { return nil }, nil
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

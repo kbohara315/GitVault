@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 
+	"gitvault/internal/config"
 	"gitvault/internal/store"
 )
 
@@ -15,6 +16,10 @@ const managedRootMarkerName = ".gitvault-root.json"
 
 func BindManagedRoot(context.Context, *store.Store, string) (store.RootBinding, error) {
 	return store.RootBinding{}, ErrManagedPlatformUnsupported
+}
+
+func BindManagedRootWithConfig(context.Context, *store.Store, string, int64, config.Config) (store.RootBinding, config.Revision, error) {
+	return store.RootBinding{}, config.Revision{}, ErrManagedPlatformUnsupported
 }
 
 func validateManagedRootLocked(context.Context, *store.Store, string, string, managedRootMarker) (store.RootBinding, error) {

@@ -6,7 +6,7 @@ GitVault uses native MyGo UI and Git bundle snapshots. These documents use short
 
 Reviewed modules: bounded snapshot contract, Linux controlled Git runner, SQLite/configuration, native secrets and credential broker, HTTPS GitHub discovery, S3/R2 transport, scheduling/retention policies, native command controls, and bounded UI event bridge. I03 offline recovery is accepted for Linux host scope only. Behavioral tests use synthetic inputs and temporary resources. Non-Linux/filesystem behavior, native platform behavior, and real provider behavior are not qualified by headless tests.
 
-I04 durable application coordination and reconciliation is accepted for Linux-host implementation scope only. The native desktop still starts without its real backend; I05 native workflow integration is next. Non-Linux and additional filesystem/crash qualification remain pending. Real S3/R2 and native credential behavior remain unqualified. Module acceptance does not complete its full integration task; see [TASKS.md](implementation/TASKS.md) and retained evidence. Do not use this version to protect data.
+I04 durable application coordination and reconciliation and I05 native local workflow are accepted for Linux-host implementation scope only. I05 automated gates and native Start/Cancel smoke pass. Non-Linux and broader filesystem/crash qualification remain pending. Real S3/R2 and native credential behavior remain unqualified. Module acceptance does not complete its full integration task; see [TASKS.md](implementation/TASKS.md) and retained evidence. Do not use this version to protect data.
 
 ## Read in this order
 

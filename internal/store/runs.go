@@ -89,8 +89,15 @@ func (s *Store) BeginRun(ctx context.Context, intent RunIntent) (Run, error) {
 		}
 	}
 	if intent.RootID != "" {
-		if _, err = readRoot(ctx, tx, s.identity, intent.RootID, true); err != nil {
-			return Run{}, err
+		root, rootErr := readRoot(ctx, tx, s.identity, intent.RootID, true)
+		if rootErr != nil {
+			return Run{}, rootErr
+		}
+		if intent.Kind == "local_backup" {
+			configuredRoot := revision.Config().Backup.Root
+			if configuredRoot == nil || *configuredRoot != root.Path {
+				return Run{}, errors.New("local backup root is not the captured configuration root")
+			}
 		}
 	}
 	var active string

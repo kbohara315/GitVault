@@ -13,7 +13,7 @@ func TestBoundedProgressBridge(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		s := app.ViewState{Repositories: []app.RepositoryView{{Name: "original"}}, Settings: app.SettingsDraft{CloudSecretKey: "synthetic-secret"}}
+		s := app.ViewState{Repositories: []app.RepositoryView{{Name: "original"}}, Status: "initial"}
 		for i := int64(1); i <= 10000; i++ {
 			s.Revision = i
 			events.Publish(s)
@@ -27,7 +27,7 @@ func TestBoundedProgressBridge(t *testing.T) {
 	}
 	bridge := NewEventBackend(app.ViewState{}, events.Updates(), func(app.Command) error { return nil }, 64)
 	s := bridge.Snapshot()
-	if s.Revision != 10000 || len(s.Repositories) != 1 || s.Repositories[0].Name != "original" || s.Settings.CloudSecretKey != "" {
+	if s.Revision != 10000 || len(s.Repositories) != 1 || s.Repositories[0].Name != "original" {
 		t.Fatalf("coalesced event lost facts or leaked secret: %+v", s)
 	}
 	s.Repositories[0].Name = "changed by caller"
@@ -62,9 +62,4 @@ func TestMainThreadDispatchNoWaitCycle(t *testing.T) {
 	if !tt.HasText("Cancellation recorded") || !tt.HasText("Worker stopped without UI dispatch") {
 		t.Fatalf("terminal event not applied on next UI frame: %v", tt.Texts())
 	}
-}
-
-func TestLocalWorkflowCommands(t *testing.T) {
-	t.Run("admission and busy", TestNativeLocalAdmissionAndBusyState)
-	t.Run("restore exact input", TestNativeRestoreCarriesExactSnapshotAndDestination)
 }

@@ -23,8 +23,23 @@ func bindTestRoot(t *testing.T, s *Store) RootBinding {
 	t.Helper()
 	id := s.Identity()
 	r := RootBinding{ID: "test-root", Path: filepath.Join(privateTempDir(t), "managed"), FilesystemID: "synthetic-filesystem", StoreID: id.StoreID, InstallationID: id.InstallationID, DataDir: id.DataDir, Generation: 1, Active: true}
-	if err := s.BindRoot(t.Context(), r); err != nil {
+	if err := rebindTestRootConfig(t, s, r); err != nil {
 		t.Fatal(err)
 	}
 	return r
+}
+
+func rebindTestRootConfig(t *testing.T, s *Store, root RootBinding) error {
+	t.Helper()
+	current, err := s.CurrentConfig(t.Context())
+	if err != nil {
+		return err
+	}
+	values := current.Config()
+	path := root.Path
+	values.Backup.Root = &path
+	_, err = s.RebindRootConfig(t.Context(), current.ID(), values, root, func() (func() error, error) {
+		return func() error { return nil }, nil
+	})
+	return err
 }
