@@ -36,6 +36,8 @@ For managed work, root marker UUIDs and installation/database UUIDs must agree u
 
 Managed root ownership is exclusive to one installation/database authority, checked from a versioned root marker under the shared OS root lock. Reject foreign/ambiguous authority rather than letting a second SQLite database maintain independent pins/leases for the same artifacts. Managed readers and deletion cooperate with that authority. Standalone read-only import can copy under a root read lock without accessing the original database, then restore its private copy elsewhere.
 
+The Linux engine trusts paths against **other OS users**, not same-UID code execution. A managed root must be owned by the current user and not group/world writable. Its immediate parent must not be group/world writable, except a sticky shared directory such as `/tmp` when the root entry is owned by the current user. Engine-created managed descendants are private, current-user-owned directories. Restore destination parents use the same trust boundary. Static symlinks are rejected; marker and snapshot files are opened without following a final-component symlink. A same-UID process can impersonate the application and is outside the desktop threat model.
+
 | Observed state | Action |
 | --- | --- |
 | Active task whose owner is gone | mark interrupted and reconcile its operation ID/staging/publication |
